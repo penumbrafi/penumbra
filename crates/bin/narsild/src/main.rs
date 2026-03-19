@@ -353,6 +353,53 @@ async fn handle_dkg_round2(
     }
 }
 
+/// activate DKG share for a specific nested position in outer FROST
+#[derive(Deserialize)]
+struct DkgActivateRequest {
+    /// the nested position in the outer FROST (e.g. 3 for position 3 in 2-of-3)
+    nested_position: u32,
+}
+
+async fn handle_dkg_activate(
+    State(app): State<AppState>,
+    Json(req): Json<DkgActivateRequest>,
+) -> impl IntoResponse {
+    let guard = app.dkg_ceremony.lock().await;
+    let ceremony = match guard.as_ref() {
+        Some(c) => c,
+        None => return Json(serde_json::json!({"error": "no DKG ceremony"})),
+    };
+
+    let result = match &ceremony.result {
+        Some(r) => r,
+        None => return Json(serde_json::json!({"error": "DKG not complete"})),
+    };
+
+    // evaluate inner share at the nested position
+    let share_scalar = match result.eval_at(req.nested_position) {
+        Some(s) => s,
+        None => return Json(serde_json::json!({"error": "failed to evaluate share"})),
+    };
+
+    // update the signing service with the real share
+    let holder_index = result.holder_index;
+    {
+        let mut signer = app.signing.signer.lock().await;
+        signer.holder_index = holder_index;
+        signer.share_scalar = share_scalar;
+    }
+
+    tracing::info!("DKG activated: holder={} nested_position={} share={}...",
+        holder_index, req.nested_position,
+        hex::encode(&share_scalar.to_repr().as_ref()[..8]));
+
+    Json(serde_json::json!({
+        "status": "activated",
+        "holder_index": holder_index,
+        "nested_position": req.nested_position,
+    }))
+}
+
 /// DKG status
 async fn handle_dkg_status(State(app): State<AppState>) -> impl IntoResponse {
     let guard = app.dkg_ceremony.lock().await;
@@ -497,6 +544,7 @@ async fn main() {
         .route("/dkg/init", axum::routing::post(handle_dkg_init))
         .route("/dkg/round1", axum::routing::post(handle_dkg_round1))
         .route("/dkg/round2", axum::routing::post(handle_dkg_round2))
+        .route("/dkg/activate", axum::routing::post(handle_dkg_activate))
         .route("/dkg/status", axum::routing::get(handle_dkg_status))
         .route("/health", axum::routing::get(handle_health))
         .with_state(state);

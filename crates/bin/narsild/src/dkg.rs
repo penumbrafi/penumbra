@@ -18,7 +18,7 @@ use osst::dkg;
 use osst::reshare::DealerCommitment;
 use pasta_curves::pallas::Point as PallasPoint;
 use pasta_curves::pallas::Scalar as PallasScalar;
-use pasta_curves::group::{ff::PrimeField, GroupEncoding};
+use pasta_curves::group::{ff::{Field, PrimeField}, GroupEncoding};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -299,6 +299,26 @@ impl DkgCeremony {
 
         self.result = Some(result.clone());
         Ok(result)
+    }
+}
+
+impl DkgResult {
+    /// evaluate the inner share at a specific outer position.
+    /// returns the signing share σ_k = Σ_j (coeff_share_j * position^j)
+    ///
+    /// this is the share used for nested FROST signing at the given position.
+    pub fn eval_at(&self, position: u32) -> Option<PallasScalar> {
+        let x = PallasScalar::from(position as u64);
+        let mut result = PallasScalar::zero();
+        let mut x_pow = PallasScalar::one();
+
+        for share_hex in &self.coefficient_shares {
+            let scalar = scalar_from_hex(share_hex)?;
+            result = result + scalar * x_pow;
+            x_pow = x_pow * x;
+        }
+
+        Some(result)
     }
 }
 
