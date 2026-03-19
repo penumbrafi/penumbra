@@ -92,6 +92,10 @@ pub struct DkgCeremony {
     commitments: HashMap<u32, HashMap<u32, DealerCommitment<PallasPoint>>>,
     /// collected subshares: coeff_index → dealer_index → scalar
     subshares: HashMap<u32, HashMap<u32, PallasScalar>>,
+    /// how many dealers actually committed in round 1 (may be < inner_n)
+    actual_dealers: u32,
+    /// whether round 1 was closed (no more commitments accepted)
+    round1_closed: bool,
     /// final result
     pub result: Option<DkgResult>,
     peers: PeerSet,
@@ -118,6 +122,8 @@ impl DkgCeremony {
             dealers,
             commitments: HashMap::new(),
             subshares: HashMap::new(),
+            actual_dealers: 0,
+            round1_closed: false,
             result: None,
             peers,
         }
@@ -181,15 +187,35 @@ impl DkgCeremony {
         self.all_commitments_received()
     }
 
-    /// check if all round 1 commitments are in
+    /// check if all expected round 1 commitments are in
     fn all_commitments_received(&self) -> bool {
+        let expected = if self.round1_closed { self.actual_dealers } else { self.inner_n };
         for j in 0..self.outer_t {
             let count = self.commitments.get(&j).map(|m| m.len()).unwrap_or(0);
-            if count < self.inner_n as usize {
+            if count < expected as usize {
                 return false;
             }
         }
         true
+    }
+
+    /// close round 1: lock in whoever committed, proceed to round 2.
+    /// call this after a timeout if not all validators committed.
+    /// returns the number of actual dealers.
+    pub fn close_round1(&mut self) -> Result<u32, String> {
+        if self.round1_closed {
+            return Ok(self.actual_dealers);
+        }
+        // count actual dealers from coeff 0 (all coefficients should have same set)
+        let dealers = self.commitments.get(&0).map(|m| m.len() as u32).unwrap_or(0);
+        if dealers < self.inner_t {
+            return Err(format!("only {} dealers committed, need at least {} (threshold)",
+                dealers, self.inner_t));
+        }
+        self.actual_dealers = dealers;
+        self.round1_closed = true;
+        tracing::info!("DKG round1 closed: {}/{} dealers committed", dealers, self.inner_n);
+        Ok(dealers)
     }
 
     /// round 2: generate and send subshares to each peer
@@ -249,9 +275,10 @@ impl DkgCeremony {
     }
 
     fn all_subshares_received(&self) -> bool {
+        let expected = if self.actual_dealers > 0 { self.actual_dealers } else { self.inner_n };
         for j in 0..self.outer_t {
             let count = self.subshares.get(&j).map(|m| m.len()).unwrap_or(0);
-            if count < self.inner_n as usize {
+            if count < expected as usize {
                 return false;
             }
         }
@@ -280,7 +307,8 @@ impl DkgCeremony {
                     .map_err(|e| format!("aggregation error: {:?}", e))?;
             }
 
-            let share = agg.finalize(self.inner_n)
+            let num_dealers = if self.actual_dealers > 0 { self.actual_dealers } else { self.inner_n };
+            let share = agg.finalize(num_dealers)
                 .map_err(|e| format!("finalize error: {:?}", e))?;
             coefficient_shares.push(hex::encode(share.to_repr().as_ref()));
 
