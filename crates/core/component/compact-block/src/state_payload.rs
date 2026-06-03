@@ -118,11 +118,22 @@ impl From<StatePayload> for pb::StatePayload {
 impl TryFrom<pb::StatePayload> for StatePayload {
     type Error = anyhow::Error;
     fn try_from(value: pb::StatePayload) -> Result<Self, Self::Error> {
-        let source = value
-            .source
-            .ok_or_else(|| anyhow::anyhow!("state payload missing source"))?
-            .try_into()
-            .context("could not parse commitment source")?;
+        // pd 2.0.6 sometimes emits CompactBlock payloads with source = None
+        // (a real payload from the chain that we still need to scan). Treating
+        // that as a hard parse failure halts the view worker and blocks all
+        // downstream relay. Fall back to the existing "stripped transaction
+        // source" semantics, which the SDK already supports as the canonical
+        // unknown-origin commitment marker (see CommitmentSource::transaction()
+        // in penumbra-sdk-sct).
+        let source = match value.source {
+            Some(s) => s
+                .try_into()
+                .context("could not parse commitment source")?,
+            None => {
+                tracing::trace!("state payload missing source, treating as stripped transaction");
+                CommitmentSource::Transaction { id: None }
+            }
+        };
         match value.state_payload {
             Some(pb::state_payload::StatePayload::RolledUp(pb::state_payload::RolledUp {
                 commitment,
