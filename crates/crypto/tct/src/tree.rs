@@ -275,9 +275,20 @@ impl Tree {
 
         let (auth_path, leaf) = match self.inner.witness(index) {
             Some(witness) => witness,
-            None => panic!(
-                "commitment `{commitment:?}` at position `{index:?}` must be witnessed because it is indexed"
-            ),
+            None => {
+                // Inner-tree state is inconsistent with the commitment index:
+                // the index says we should have a witness, but the inner tree
+                // doesn't. Rather than panic and take the daemon down, return
+                // None — the function already supports "not witnessed" and
+                // every existing caller handles it (e.g. view::service::witness
+                // surfaces a clean InvalidArgument).
+                tracing::warn!(
+                    ?commitment,
+                    ?index,
+                    "indexed commitment missing from inner tree; treating as not witnessed"
+                );
+                return None;
+            }
         };
 
         debug_assert_eq!(leaf, Hash::of(commitment));
