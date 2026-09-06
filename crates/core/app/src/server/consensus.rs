@@ -224,6 +224,7 @@ impl Consensus {
     async fn end_block(&mut self, end_block: request::EndBlock) -> response::EndBlock {
         let latest_state_version = self.storage.latest_version();
         tracing::info!(height = ?end_block.height, ?latest_state_version, "ending block");
+
         if latest_state_version >= end_block.height as u64 {
             tracing::warn!(
                 %latest_state_version,
@@ -258,6 +259,11 @@ impl Consensus {
 
         Ok(response::Commit {
             data: app_hash.0.to_vec().into(),
+            // Deliberately zero: this tells CometBFT to keep every block.
+            // pd has no state sync, so new nodes can only join by replaying
+            // blocks fetched from peers. Enabling block retention before state
+            // sync exists risks a network no new node can join.
+            // See docs/pruning.md before changing this.
             retain_height: 0u32.into(),
         })
     }

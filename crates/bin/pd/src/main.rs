@@ -12,7 +12,7 @@ use cnidarium::Storage;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use pd::{
     cli::{MigrateCommand, NetworkCommand, Opt, RootCommand},
-    migrate::Migration::{IbcClientRecovery, NoOp, ReadyToStart},
+    migrate::Migration::{IbcClientRecovery, NoOp, PruneState, ReadyToStart},
     network::{
         config::{get_network_dir, parse_tm_address, url_has_necessary_parts},
         generate::NetworkConfig,
@@ -27,6 +27,7 @@ use rand_core::OsRng;
 use rustls::crypto::aws_lc_rs;
 use tendermint_config::net::Address as TendermintAddress;
 use tower::ServiceBuilder;
+use tonic_web::GrpcWebLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::Instrument as _;
@@ -108,6 +109,20 @@ async fn main() -> anyhow::Result<()> {
             };
             let rocksdb_home = pd_home.join("rocksdb");
 
+            // An interrupted `pd migrate prune` leaves `rocksdb_old` without `rocksdb`.
+            // Opening storage here would silently create an empty database and
+            // start syncing from genesis, so refuse instead.
+            let rocksdb_old = pd_home.join("rocksdb_old");
+            anyhow::ensure!(
+                !(rocksdb_old.exists() && !rocksdb_home.exists()),
+                "found {} but no {}: a `pd migrate prune` was interrupted mid-swap. \
+                 Restore the database with `mv {} {}` before starting pd.",
+                rocksdb_old.display(),
+                rocksdb_home.display(),
+                rocksdb_old.display(),
+                rocksdb_home.display(),
+            );
+
             let storage = Storage::load(rocksdb_home, SUBSTORE_PREFIXES.to_vec())
                 .await
                 .context(
@@ -144,14 +159,16 @@ async fn main() -> anyhow::Result<()> {
                 penumbra_sdk_app::rpc::routes(&storage, tm_proxy, enable_expensive_rpc)?
                     .into_axum_router()
                     .layer(
-                        ServiceBuilder::new().layer(TraceLayer::new_for_grpc().make_span_with(
-                            |req: &http::Request<_>| match remote_addr(req) {
-                                Some(remote_addr) => {
-                                    tracing::error_span!("grpc", ?remote_addr)
-                                }
-                                None => tracing::error_span!("grpc"),
-                            },
-                        )),
+                        ServiceBuilder::new()
+                            .layer(GrpcWebLayer::new())
+                            .layer(TraceLayer::new_for_grpc().make_span_with(
+                                |req: &http::Request<_>| match remote_addr(req) {
+                                    Some(remote_addr) => {
+                                        tracing::error_span!("grpc", ?remote_addr)
+                                    }
+                                    None => tracing::error_span!("grpc"),
+                                },
+                            )),
                     );
 
             // Create Axum routes for the frontend app.
@@ -545,6 +562,21 @@ async fn main() -> anyhow::Result<()> {
                     .instrument(pd_migrate_span)
                     .await
                     .context("failed to perform no-op migration")?;
+                }
+                Some(MigrateCommand::Prune {
+                    chunk_size,
+                    delete_old_db,
+                }) => {
+                    tracing::info!("performing JMT pruning migration");
+                    PruneState(pd::migrate::PruneOptions {
+                        chunk_size,
+                        delete_old_db,
+                    })
+                    .migrate(pd_home, comet_home, None, force)
+                        .instrument(pd_migrate_span)
+                        .await
+                        .context("failed to perform JMT pruning")?;
+                    exit(0)
                 }
                 None => {
                     if ready_to_start {
