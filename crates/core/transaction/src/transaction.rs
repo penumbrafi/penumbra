@@ -276,7 +276,10 @@ impl Transaction {
                 | Action::ActionDutchAuctionSchedule(_)
                 | Action::ActionDutchAuctionEnd(_)
                 | Action::ActionDutchAuctionWithdraw(_)
-                | Action::ActionLiquidityTournamentVote(_) => {}
+                | Action::ActionLiquidityTournamentVote(_)
+                | Action::ActionTokenFactoryCreate(_)
+                | Action::ActionTokenFactoryMint(_)
+                | Action::ActionBurn(_) => {}
             }
         }
 

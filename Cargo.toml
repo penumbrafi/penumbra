@@ -2,7 +2,7 @@
 
 resolver = "2"
 
-exclude = ["tools/proto-compiler"]
+exclude = ["tools/proto-compiler", "crates/bin/pmonitor", "crates/bin/ctm-mm"]
 
 # Also remember to add to deployments/scripts/rust-docs
 members = [
@@ -12,7 +12,6 @@ members = [
   "crates/bin/pclientd",
   "crates/bin/pd",
   "crates/bin/pindexer",
-  "crates/bin/pmonitor",
   "crates/cnidarium-component",
   "crates/core/app",
   "crates/core/app-tests",
@@ -29,6 +28,7 @@ members = [
   "crates/core/component/sct",
   "crates/core/component/shielded-pool",
   "crates/core/component/stake",
+  "crates/core/component/token-factory",
   "crates/core/keys",
   "crates/core/num",
   "crates/core/transaction",
@@ -165,6 +165,7 @@ penumbra-sdk-compact-block           = { default-features = false, version = "2.
 penumbra-sdk-custody                 = { version = "2.1.1", path = "crates/custody" }
 penumbra-sdk-custody-ledger-usb      = { version = "2.1.1", path = "crates/custody-ledger-usb" }
 penumbra-sdk-auction                 = { default-features = false, version = "2.1.1", path = "crates/core/component/auction" }
+penumbra-sdk-token-factory           = { default-features = false, version = "2.1.1", path = "crates/core/component/token-factory" }
 penumbra-sdk-dex                     = { default-features = false, version = "2.1.1", path = "crates/core/component/dex" }
 penumbra-sdk-distributions           = { default-features = false, version = "2.1.1", path = "crates/core/component/distributions" }
 penumbra-sdk-fee                     = { default-features = false, version = "2.1.1", path = "crates/core/component/fee" }

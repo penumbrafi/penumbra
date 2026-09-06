@@ -57,6 +57,9 @@ impl AppActionHandler for Action {
             Action::ActionDutchAuctionEnd(action) => action.check_stateless(()).await,
             Action::ActionDutchAuctionWithdraw(action) => action.check_stateless(()).await,
             Action::ActionLiquidityTournamentVote(action) => action.check_stateless(context).await,
+            Action::ActionTokenFactoryCreate(action) => action.check_stateless(()).await,
+            Action::ActionTokenFactoryMint(action) => action.check_stateless(()).await,
+            Action::ActionBurn(action) => action.check_stateless(()).await,
         }
     }
 
@@ -99,6 +102,12 @@ impl AppActionHandler for Action {
             Action::ActionDutchAuctionEnd(action) => action.check_historical(state).await,
             Action::ActionDutchAuctionWithdraw(action) => action.check_historical(state).await,
             Action::ActionLiquidityTournamentVote(action) => action.check_historical(state).await,
+            // Token factory actions have no historical checks - validation is stateless
+            // and state changes happen in check_and_execute
+            Action::ActionTokenFactoryCreate(_action) => Ok(()),
+            Action::ActionTokenFactoryMint(_action) => Ok(()),
+            // Burn has no historical checks - just consumes value from balance
+            Action::ActionBurn(_action) => Ok(()),
         }
     }
 
@@ -141,6 +150,9 @@ impl AppActionHandler for Action {
             Action::ActionDutchAuctionEnd(action) => action.check_and_execute(state).await,
             Action::ActionDutchAuctionWithdraw(action) => action.check_and_execute(state).await,
             Action::ActionLiquidityTournamentVote(action) => action.check_and_execute(state).await,
+            Action::ActionTokenFactoryCreate(action) => action.check_and_execute(state).await,
+            Action::ActionTokenFactoryMint(action) => action.check_and_execute(state).await,
+            Action::ActionBurn(action) => action.check_and_execute(state).await,
         }
     }
 }

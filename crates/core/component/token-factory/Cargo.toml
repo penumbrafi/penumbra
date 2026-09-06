@@ -1,0 +1,46 @@
+[package]
+name = "penumbra-sdk-token-factory"
+authors = { workspace = true }
+repository = { workspace = true }
+description = "Token factory component for Penumbra"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+
+[features]
+default = ["std"]
+std = []
+component = [
+    "cnidarium",
+    "cnidarium-component",
+    "penumbra-sdk-proto/cnidarium",
+    # query_service_server (used by component/rpc.rs) lives behind the proto
+    # crate's `rpc` feature. Without this the component feature does not build.
+    "penumbra-sdk-proto/rpc",
+    "tendermint",
+    "tonic",
+]
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+cnidarium = { workspace = true, optional = true }
+cnidarium-component = { workspace = true, optional = true }
+hex = { workspace = true }
+once_cell = { workspace = true }
+# component/view.rs calls Message::encode_to_vec()/decode()
+prost = { workspace = true }
+penumbra-sdk-asset = { workspace = true, default-features = false }
+penumbra-sdk-num = { workspace = true, default-features = false }
+penumbra-sdk-proto = { workspace = true, default-features = false }
+penumbra-sdk-txhash = { workspace = true, default-features = false }
+rand_core = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tendermint = { workspace = true, optional = true }
+thiserror = { workspace = true }
+tonic = { workspace = true, optional = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

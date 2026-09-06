@@ -92,6 +92,9 @@ impl AppActionHandler for ProposalSubmit {
                         ProposalSubmit(_) | ProposalWithdraw(_) | ProposalDepositClaim(_) => {
                             anyhow::bail!("invalid action in Community Pool spend proposal (not allowed to manipulate proposals from within proposals)")
                         }
+                        ActionTokenFactoryCreate(_) | ActionTokenFactoryMint(_) => {
+                            anyhow::bail!("invalid action in Community Pool spend proposal (not allowed to create/mint tokens)")
+                        }
                         ValidatorDefinition(_)
                         | ActionLiquidityTournamentVote(_)
                         | IbcAction(_)
@@ -105,7 +108,8 @@ impl AppActionHandler for ProposalSubmit {
                         | CommunityPoolDeposit(_)
                         | ActionDutchAuctionSchedule(_)
                         | ActionDutchAuctionEnd(_)
-                        | ActionDutchAuctionWithdraw(_) => {}
+                        | ActionDutchAuctionWithdraw(_)
+                        | ActionBurn(_) => {}
                     }
                 }
             }
