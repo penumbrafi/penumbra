@@ -51,8 +51,9 @@ restart at 12598601 and **cannot start the chain**; do not use them.
 
 ```sh
 # example, x86_64:
-curl -fsSL -o pd.tar.gz https://github.com/penumbrafi/penumbra/releases/download/v2.0.9/pd-x86_64-unknown-linux-gnu.tar.gz
-tar xzf pd.tar.gz && sudo install pd-x86_64-unknown-linux-gnu/pd /usr/local/bin/pd
+curl -fsSL -o pd.tar.gz https://github.com/penumbrafi/penumbra/releases/download/v2.0.9/pd-recovery-2.0.9-x86_64-linux-gnu.tar.gz
+tar xzf pd.tar.gz && sudo install pd-recovery-2.0.9-x86_64-linux-gnu/pd /usr/local/bin/pd
+sha256sum /usr/local/bin/pd   # compare with SHA256SUMS on the release page
 pd --version    # -> pd 2.0.9
 ```
 
