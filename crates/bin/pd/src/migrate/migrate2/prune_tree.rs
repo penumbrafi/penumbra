@@ -212,6 +212,40 @@ impl Migration for JellyfishTreePruner {
         storage.release().await;
         tracing::info!("closed both databases");
 
+        // Before the destructive directory swap, reopen the pruned database from
+        // scratch and prove it reproduces the original root hash at the original
+        // version. cnidarium verifies the streamed tree with range proofs, but
+        // the auxiliary column families are copied raw and the config pointer is
+        // taken verbatim; a fresh reopen catches any inconsistency (a wrong
+        // version pointer surfaces as a version mismatch here) while the original
+        // `rocksdb` is still fully intact. On mismatch we bail without swapping.
+        {
+            let verify = Storage::load(rocksdb_new.clone(), SUBSTORE_PREFIXES.clone())
+                .await
+                .context("reopening pruned database for verification")?;
+            let snapshot = verify.latest_snapshot();
+            let new_root_hash = snapshot.root_hash().await?;
+            let new_version = snapshot.version();
+            verify.release().await;
+            anyhow::ensure!(
+                new_root_hash == original_root_hash && new_version == version,
+                "pruned database verification failed: expected root {:?} at version {}, \
+                 got root {:?} at version {}. The original database at {} is untouched; \
+                 the bad pruned output is at {} for inspection. Do NOT start pd on it.",
+                original_root_hash,
+                version,
+                new_root_hash,
+                new_version,
+                rocksdb_dir.display(),
+                rocksdb_new.display(),
+            );
+            tracing::info!(
+                ?new_root_hash,
+                new_version,
+                "verified pruned database reproduces the original root hash"
+            );
+        }
+
         // Switch unpruned and pruned databases. Two renames cannot be made atomic
         // together; if we die between them, `check_directory_layout` detects the
         // `rocksdb_old`-without-`rocksdb` layout on the next run and refuses to
@@ -226,6 +260,18 @@ impl Migration for JellyfishTreePruner {
             std::fs::rename(&rocksdb_old, &rocksdb_dir)
                 .with_context(|| format!("rollback of {} -> {} failed; restore it manually", rocksdb_old.display(), rocksdb_dir.display()))?;
             return Err(e).with_context(|| format!("renaming {} -> {}", rocksdb_new.display(), rocksdb_dir.display()));
+        }
+
+        // fsync the parent directory so the rename pair is durable across a power
+        // loss, not only a process kill. Best-effort: a failure here does not
+        // undo the successful swap, so warn rather than abort.
+        match std::fs::File::open(pd_home) {
+            Ok(dir) => {
+                if let Err(e) = dir.sync_all() {
+                    tracing::warn!(error = %e, "could not fsync pd home after swap");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "could not open pd home to fsync after swap"),
         }
 
         if self.options.delete_old_db {
