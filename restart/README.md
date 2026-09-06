@@ -37,11 +37,13 @@ is unset.
 - chain-id: `penumbra-1` (unchanged)
 - initial_height: `12598601`
 - base: pd 2.0.6 (`f833ace`) + this patch
-- genesis sha256: `386a4f58f53316e7c410f860bba6ee5c8cf0acd97bca808cb874a80b951788a8`
-- post_root: `af2ebaeb51760fc972884c4bdccde4794c41243d92a79a7e610b5ba02427f74a`
-- removed from the active set (disabled, no penalty): 12 offline validators
-  (iqlusion, polkachu, and everyone not ticked in) — addresses in
-  `penumbra-restart.sh` and `validator-map.tsv`.
+- genesis sha256: `2fa8384ff30dc5a9d6eaf3f50b80b98bef6d95c67d7cc674354b1df1d2787b1b`
+- post_root: `95c5f00d71e5030c5ab7307727544c1d908002b6380786753da709a634da6a4a`
+- removed from the active set (disabled, no penalty): the **2** clearly-departed
+  offline validators only — **iqlusion** and **polkachu** — addresses in
+  `penumbra-restart.sh` and `validator-map.tsv`. All other 14 validators are
+  **kept**; uncommitted operators can rejoin by simply starting their migrated
+  node (no re-bond). Committed + online ≈ 73% of the kept set (> 2/3).
 
 ## Build
 

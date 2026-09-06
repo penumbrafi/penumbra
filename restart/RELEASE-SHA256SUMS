@@ -1,4 +1,4 @@
 d113cf59322453dadf30880abd560df4b472ab9403da23b09dd3a3319dc0ba77  pd-migrate-restart-v2.0.6.src.patch
 0bea0969e103094e522e767f1787e767fbaa609324dd94a3c53988a0dd10c845  pd-restart
-386a4f58f53316e7c410f860bba6ee5c8cf0acd97bca808cb874a80b951788a8  candidate-genesis-penumbra-1-restart-12598601-disable.json
-# post_root (app_hash/genesisCheckpoint) = af2ebaeb51760fc972884c4bdccde4794c41243d92a79a7e610b5ba02427f74a ; --disable, 12 removed, KEEP=4
+2fa8384ff30dc5a9d6eaf3f50b80b98bef6d95c67d7cc674354b1df1d2787b1b  candidate-genesis-penumbra-1-restart-12598601-disable.json
+# post_root (app_hash/genesisCheckpoint) = 95c5f00d71e5030c5ab7307727544c1d908002b6380786753da709a634da6a4a ; --disable, 2 removed (iqlusion, polkachu), KEEP=14

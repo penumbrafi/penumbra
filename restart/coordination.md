@@ -97,7 +97,7 @@ the runbook exactly; do not improvise.
 - base binary: pd 2.0.6 with the restart migration (reproducible from a 21 KB
 source patch)
 - genesis sha256:
-`386a4f58f53316e7c410f860bba6ee5c8cf0acd97bca808cb874a80b951788a8` (539 bytes) —
+`2fa8384ff30dc5a9d6eaf3f50b80b98bef6d95c67d7cc674354b1df1d2787b1b` (539 bytes) —
 every operator's migration must reproduce this exact hash
 - removed from the active set (disabled, no penalty): iqlusion, polkachu, and
 every operator not ticked in
