@@ -91,7 +91,8 @@ say "cometbft block store was cleared by the migration; no unsafe-reset-all need
 
 step "6 — set KEEP-only peers + disable PEX for first blocks"
 CFG="$COMET_HOME/config/config.toml"; cp -a "$CFG" "$CFG.$TS.bak"
-KEEP_PEERS="${KEEP_PEERS:-$(ask 'paste persistent_peers string for the KEEP validators only (nodeid@host:port,...):')}"
+DEFAULT_PEERS="99e470d0ed8fd29f4a596731e3f077c7c3b5fc17@penumbra-peer.rotko.net:26656"
+KEEP_PEERS="${KEEP_PEERS:-$(ask "persistent_peers [default: $DEFAULT_PEERS]:")}"; KEEP_PEERS="${KEEP_PEERS:-$DEFAULT_PEERS}"
 say "will set persistent_peers = KEEP-only and pex = false in $CFG"
 confirm "6 — peers"
 sed -i "s|^persistent_peers *=.*|persistent_peers = \"$KEEP_PEERS\"|" "$CFG"

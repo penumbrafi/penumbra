@@ -113,7 +113,8 @@ cat node0/cometbft/data/priv_validator_state.json
 
 # 6. Point at the KEEP set only, and disable peer exchange for the first blocks.
 #    Edit node0/cometbft/config/config.toml:
-#      persistent_peers = "<KEEP-set peers — provided in the coordination channel>"
+#      persistent_peers = "99e470d0ed8fd29f4a596731e3f077c7c3b5fc17@penumbra-peer.rotko.net:26656"
+#      (Rotko's already-migrated public peer; add others from the coordination channel)
 #      pex = false
 #    (revert pex/peers to normal after the chain is producing)
 
