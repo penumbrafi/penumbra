@@ -37,8 +37,12 @@ tar xzf pd.tar.gz && sudo install pd-x86_64-unknown-linux-gnu/pd /usr/local/bin/
 pd --version    # -> pd 2.0.8
 ```
 
-Or build from source (see `restart/README.md`). Either way `pd migrate-restart`
-must reproduce the genesis sha above.
+Or build from source (see
+[`restart/README.md`](https://github.com/penumbrafi/penumbra/blob/restart/penumbra-1-12598601/restart/README.md)).
+Either way `pd migrate-restart` must reproduce the genesis sha above.
+
+Reference genesis (539 bytes, sha `2fa8384f…`) for comparison:
+<https://github.com/penumbrafi/penumbra/releases/download/penumbra-1-restart-12598601/candidate-genesis-penumbra-1-restart-12598601-disable.json>
 
 ---
 
@@ -48,10 +52,13 @@ You have your halted node dir with `pd/` (rocksdb) and `cometbft/`. Adjust the
 paths below to your layout.
 
 ### The easy path
-`restart/penumbra-restart.sh` walks every step below as confirmed prompts
-(detects your homes, refuses on any mismatch):
+[`restart/penumbra-restart.sh`](https://github.com/penumbrafi/penumbra/blob/restart/penumbra-1-12598601/restart/penumbra-restart.sh)
+walks every step below as confirmed prompts (detects your homes, refuses on any
+mismatch):
 
 ```sh
+curl -fsSL -o penumbra-restart.sh https://raw.githubusercontent.com/penumbrafi/penumbra/restart/penumbra-1-12598601/restart/penumbra-restart.sh
+chmod +x penumbra-restart.sh
 ./penumbra-restart.sh /usr/local/bin/pd
 ```
 
