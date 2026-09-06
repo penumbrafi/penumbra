@@ -6,7 +6,7 @@
 consensus-breaking. Every node on the network, validator or not, must run the
 migration in this release to follow the chain. `APP_VERSION` becomes 12.
 
-Penumbra is maintained by Rotko Networks. Releases are published from
+Penumbra is community-maintained; Rotko Networks coordinates releases, published from
 `rotkonetworks/penumbra`.
 
 ### What happened
