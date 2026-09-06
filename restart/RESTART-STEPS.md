@@ -44,7 +44,7 @@ one-block gap.
 
 ## 0. Get the binary
 
-Download `pd` **v2.0.9** (Linux x86_64 or arm64) — it includes `migrate-restart`
+Download `pd` **v2.0.9** (Linux x86_64; on arm64 build from source) — it includes `migrate-restart`
 and is what the revived chain runs. Earlier builds (2.0.6 branch builds, v2.0.8)
 restart at 12598601 and **cannot start the chain**; do not use them.
 <https://github.com/penumbrafi/penumbra/releases/tag/v2.0.9>

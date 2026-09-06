@@ -48,8 +48,7 @@ is unset.
 
 ## Binary
 
-The simplest path is the **v2.0.9 recovery release** — cross-platform Linux
-(x86_64 + arm64) `pd` that **includes `migrate-restart`** and is what the revived
+The simplest path is the **v2.0.9 recovery release** — Linux x86_64 `pd` (arm64: build from source) that **includes `migrate-restart`** and is what the revived
 chain runs:
 <https://github.com/penumbrafi/penumbra/releases/tag/v2.0.9>
 (v2.0.8 and the 2.0.6 branch builds restart at 12598601 and cannot start the chain; do not use them)
