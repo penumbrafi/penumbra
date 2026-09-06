@@ -32,7 +32,8 @@ No forked binary, no validator-set surgery.
 
 ## Schedule
 - **Phase 1 — emergency restart:** now, before the noble client expiry (2026-09-07 11:37 UTC).
-  2.0.6, validator-set change only. Tested genesis `386a4f58…`.
+  pd 2.0.9 (2.0.6 + migrate-restart): validator-set change plus an empty app block 12598601,
+  genesis at 12598602. Drilled on copies of the real halt state.
 - **Phase 2 — pruning upgrade:** ~1–2 weeks after Phase 1 is stable. Harden the cnidarium-pruning
   branch (`prune/erwan-5272-rebased`), dry-run on a clone, schedule a halt height, migrate via path B.
   Result: chain state drops from ~322 GB to a fraction — cheap to run, which is what makes a small

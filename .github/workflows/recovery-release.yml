@@ -6,7 +6,7 @@ name: recovery-release
 #
 # The binary is a convenience. The real cross-check for operators is the genesis
 # sha256 that their own `pd migrate-restart` reproduces
-# (2fa8384ff30dc5a9d6eaf3f50b80b98bef6d95c67d7cc674354b1df1d2787b1b), not this
+# (c099ccb02a2136d5071fb22b1511eeec1588ad09676e0a0532d072f28b433ed4), not this
 # artifact. Anyone can rebuild from source and sha-match instead of trusting it.
 
 on:
@@ -31,7 +31,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04   # glibc 2.35: portable down to older hosts than bookworm
     env:
-      GENESIS_SHA256: 2fa8384ff30dc5a9d6eaf3f50b80b98bef6d95c67d7cc674354b1df1d2787b1b
+      GENESIS_SHA256: c099ccb02a2136d5071fb22b1511eeec1588ad09676e0a0532d072f28b433ed4
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,14 +53,14 @@ jobs:
       - name: Build pd (release, locked)
         run: cargo build --release --locked -p pd
 
-      - name: Verify pd is 2.0.6 and has migrate-restart
+      - name: Verify pd is 2.0.9 and has migrate-restart
         run: |
           set -euo pipefail
           BIN=target/release/pd
           "$BIN" --version
-          "$BIN" --version 2>&1 | grep -q '2\.0\.6' || { echo "pd is not 2.0.6"; exit 1; }
+          "$BIN" --version 2>&1 | grep -q '2\.0\.9' || { echo "pd is not 2.0.9"; exit 1; }
           "$BIN" migrate-restart --help >/dev/null 2>&1 || { echo "migrate-restart subcommand missing"; exit 1; }
-          echo "OK: pd 2.0.6 with migrate-restart"
+          echo "OK: pd 2.0.9 with migrate-restart"
 
       - name: Assemble release bundle
         id: bundle
@@ -71,7 +71,7 @@ jobs:
           mkdir -p "dist/$NAME"
           cp target/release/pd "dist/$NAME/pd"
           # Reference genesis + operator material shipped on the branch.
-          cp restart/candidate-genesis-penumbra-1-restart-12598601-disable.json "dist/$NAME/"
+          cp restart/candidate-genesis-penumbra-1-restart-12598602-disable.json "dist/$NAME/"
           cp restart/RELEASE-SHA256SUMS        "dist/$NAME/" || true
           cp restart/validator-map.tsv         "dist/$NAME/" || true
           cp restart/penumbra-restart.sh       "dist/$NAME/"
@@ -84,12 +84,12 @@ jobs:
 
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
           ( cd dist && sha256sum "$NAME.tar.gz" "$NAME/pd" \
-              "$NAME/candidate-genesis-penumbra-1-restart-12598601-disable.json" \
+              "$NAME/candidate-genesis-penumbra-1-restart-12598602-disable.json" \
               > SHA256SUMS )
           echo "--- SHA256SUMS ---"; cat dist/SHA256SUMS
 
           # Confirm the shipped genesis matches the published hash.
-          GOT="$(sha256sum "dist/$NAME/candidate-genesis-penumbra-1-restart-12598601-disable.json" | awk '{print $1}')"
+          GOT="$(sha256sum "dist/$NAME/candidate-genesis-penumbra-1-restart-12598602-disable.json" | awk '{print $1}')"
           [ "$GOT" = "$GENESIS_SHA256" ] || { echo "shipped genesis sha mismatch: $GOT"; exit 1; }
           echo "genesis matches published hash"
 
@@ -133,11 +133,19 @@ jobs:
           **Verify, do not trust.** The cross-check is that your own
           \`pd migrate-restart\` reproduces the exact genesis hash below — not this
           binary. Reproduce the binary: \`cargo build --release --locked -p pd\` on
-          this tag (or apply \`restart/pd-migrate-restart-v2.0.6.src.patch\` to
-          stock v2.0.6 \`f833ace\`). Built on ubuntu-22.04 (glibc 2.35), x86_64-linux-gnu.
+          this tag. Built on ubuntu-22.04 (glibc 2.35).
+
+          **Restart height is 12598602.** Every validator that was online at the
+          halt already signed height 12598601 on the halted chain, and CometBFT
+          will not sign those rounds again, so a restart at 12598601 can never
+          produce a block (reproduced on a copy of the real halt state). The
+          migration executes an empty application block 12598601 itself and
+          starts CometBFT at 12598602; your signing state is raised to 12598602
+          by the migration. There is no CometBFT block 12598601. Earlier builds
+          (v2.0.8, the 2.0.6 branch builds) must not be used.
 
           - **genesis sha256:** \`${GENESIS_SHA256}\`
-          - **app_hash / post_root:** \`95c5f00d71e5030c5ab7307727544c1d908002b6380786753da709a634da6a4a\`
+          - **app_hash / post_root:** \`1db72ab20c0babdb8696f361d5b08d790abd8032ac64d762b138ddc80f0f99f7\`
 
           ## What each validator does
 
@@ -145,12 +153,12 @@ jobs:
           steps (detects your homes, refuses on mismatch). Manual equivalent:
 
           \`\`\`sh
-          # 0. Get pd 2.0.6 + migrate-restart (this release's binary, or build from source above).
+          # 0. Get pd 2.0.9 (this release's binary, or build from source above).
           #    STOP your old pd AND cometbft. Do NOT start any old-chain node again.
-          # 1. Back up signing state + snapshot the node:
-          cp -a node0/cometbft/data/priv_validator_state.json /safe/pvs.json
-          #    (zfs snapshot / full copy of node0 recommended)
-          # 2. Migrate (ulimit -n high; ~10s):
+          # 1. Snapshot / full copy of node0 (rollback point). Do not touch
+          #    priv_validator_key.json or priv_validator_state.json.
+          cp -a node0 node0.pre-restart
+          # 2. Migrate (ulimit -n high; ~30s):
           ulimit -n 1048576
           pd migrate-restart --home node0/pd --comet-home node0/cometbft \\
             --remove 3969C0511C6ABE474757FEAB7C1B4004796D7E72 \\
@@ -158,9 +166,8 @@ jobs:
             --disable
           # 3. VERIFY the produced genesis — MUST equal the sha above, or stop:
           sha256sum node0/cometbft/config/genesis.json
-          # 4. Reset cometbft data, then RESTORE signing state (tombstone guard):
-          cometbft unsafe-reset-all --home node0/cometbft
-          cp -a /safe/pvs.json node0/cometbft/data/priv_validator_state.json
+          # 4. Check signing state: must read "height": "12598602", round 0, step 0
+          cat node0/cometbft/data/priv_validator_state.json
           # 5. config.toml: persistent_peers = KEEP validators only, pex = false (first blocks).
           # 6. Start pd (this binary), then cometbft, in the go-window.
           \`\`\`
@@ -169,10 +176,10 @@ jobs:
           (running both = double-sign = tombstone). **If you're late**, just do
           steps 0–6 whenever and your node will sync to the tip and resume signing —
           you don't need to hit the go-window exactly. RPC/full nodes run steps 0–3
-          (skip the pvs restore) to follow the chain.
+          to follow the chain.
 
-          Expect ~3 timeout rounds (~1 min) before block 12598601 lands, since keys
-          already signed rounds 0–2 at that height. See \`restart/README.md\`.
+          The first block is 12598602 once more than two thirds of the kept set is
+          online; round timeouts before that are expected. See \`restart/README.md\`.
           EOF
           gh release create "$TAG" \
             --target "${{ github.sha }}" \
@@ -181,4 +188,4 @@ jobs:
             "dist/${NAME}.tar.gz" \
             "dist/SHA256SUMS" \
             "dist/${NAME}/pd" \
-            "dist/${NAME}/candidate-genesis-penumbra-1-restart-12598601-disable.json"
+            "dist/${NAME}/candidate-genesis-penumbra-1-restart-12598602-disable.json"

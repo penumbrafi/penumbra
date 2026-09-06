@@ -2,17 +2,17 @@
 # penumbra-1 coordinated restart helper (--disable migration).
 # Detects pd/cometbft homes + service, then walks the tested restart as CONFIRMED
 # steps. The forked `pd migrate-restart` PRODUCES the genesis from your own state;
-# you verify its sha256 matches the published value. priv_validator_state is
-# preserved across the cometbft reset (tombstone guard).
+# you verify its sha256 matches the published value. The migration raises
+# priv_validator_state to 12598602 itself; nothing is hand-edited.
 #
 # Usage: penumbra-restart.sh <pd-restart-binary> [<cometbft-binary>]
 # Build pd-restart from the source patch first (see release notes); do NOT trust a
 # prebuilt binary blindly — the genesis sha256 below is the real cross-check.
 set -euo pipefail
 
-GENESIS_SHA256="2fa8384ff30dc5a9d6eaf3f50b80b98bef6d95c67d7cc674354b1df1d2787b1b"
-POST_ROOT="95c5f00d71e5030c5ab7307727544c1d908002b6380786753da709a634da6a4a"
-RESTART_HEIGHT=12598601
+GENESIS_SHA256="c099ccb02a2136d5071fb22b1511eeec1588ad09676e0a0532d072f28b433ed4"
+POST_ROOT="1db72ab20c0babdb8696f361d5b08d790abd8032ac64d762b138ddc80f0f99f7"
+RESTART_HEIGHT=12598602
 # Remove ONLY the two clearly-departed offline validators (iqlusion, polkachu).
 # Everyone else is kept in the active set — uncommitted operators can rejoin by
 # simply starting their migrated node (no re-bond). The committed+online set is
@@ -29,9 +29,8 @@ confirm(){ [ "$(ask '   proceed? [y/N]')" = y ] || die "aborted at step: $*"; }
 
 [ $# -ge 1 ] || die "usage: $0 <pd-restart-binary> [<cometbft-binary>]"
 PDBIN="$1"; [ -x "$PDBIN" ] || die "pd-restart binary not executable: $PDBIN"
-# Accept the 2.0.6 restart build or the cross-platform v2.0.8 recovery build
-# (same migrate-restart code; the genesis sha below is the real cross-check).
-"$PDBIN" --version 2>&1 | grep -qE '2\.0\.[68]' || die "pd binary is not 2.0.6 / 2.0.8"
+# Only the v2.0.9 recovery build restarts at 12598602; older builds cannot start the chain.
+"$PDBIN" --version 2>&1 | grep -qE '2\.0\.9' || die "pd binary is not 2.0.9"
 CBIN="${2:-$(command -v cometbft || true)}"
 
 detect_pd_home(){ local c; for c in "${PENUMBRA_PD_HOME:-}" /opt/penumbra/network_data/node0/pd \
@@ -69,9 +68,9 @@ confirm "2 — backup"
 cp -a "$PVS" "$PVS_BAK"; say "priv_validator_state backed up"
 [ "$(ask '   full snapshot/backup of the node done? [y/N]')" = y ] || die "snapshot first"
 
-step "3 — run migrate-restart (produces the genesis, --disable removes 12)"
+step "3 — run migrate-restart (produces the genesis; --disable removes iqlusion + polkachu)"
 ulimit -n 1048576 || true
-say "will run: $PDBIN migrate-restart --home $PD_HOME --comet-home $COMET_HOME --disable --remove <12 addrs>"
+say "will run: $PDBIN migrate-restart --home $PD_HOME --comet-home $COMET_HOME --disable --remove <2 addrs>"
 confirm "3 — migrate"
 REMARGS=(); for a in "${REMOVE[@]}"; do REMARGS+=(--remove "$a"); done
 "$PDBIN" migrate-restart --home "$PD_HOME" --comet-home "$COMET_HOME" "${REMARGS[@]}" --disable
@@ -84,13 +83,11 @@ say "expected: $GENESIS_SHA256"; say "got:      $GOT"
 say "genesis matches the published hash"
 confirm "4 — genesis verified"
 
-step "5 — reset cometbft data, then RESTORE priv_validator_state (tombstone guard)"
-say "will run: $CBIN unsafe-reset-all --home $COMET_HOME   (wipes data/, addrbook; zeroes pvs)"
-say "then restore your pvs so the node will NOT re-sign rounds it already signed at 12598601"
-confirm "5 — reset + restore pvs"
-"$CBIN" unsafe-reset-all --home "$COMET_HOME"
-cp -a "$PVS_BAK" "$PVS"
-say "cometbft reset; priv_validator_state restored"
+step "5 — check priv_validator_state (raised to $RESTART_HEIGHT by the migration)"
+PVS_H="$(grep -o '"height": *"[0-9]*"' "$PVS" | grep -o '[0-9]*')"
+say "priv_validator_state height: $PVS_H (expected $RESTART_HEIGHT)"
+[ "$PVS_H" = "$RESTART_HEIGHT" ] || die "priv_validator_state is not at $RESTART_HEIGHT — do not continue; ask the coordinator"
+say "cometbft block store was cleared by the migration; no unsafe-reset-all needed"
 
 step "6 — set KEEP-only peers + disable PEX for first blocks"
 CFG="$COMET_HOME/config/config.toml"; cp -a "$CFG" "$CFG.$TS.bak"
@@ -107,7 +104,7 @@ confirm "7 — start"
 if [ -n "$SERVICE" ]; then sudo systemctl start "$SERVICE"; else say "start pd (forked) then cometbft manually now"; fi
 
 step "8 — verify"
-say "expect ~3 timeout rounds (~1 min) before 12598601 lands, since keys already signed r0-r2."
+say "the first block is $RESTART_HEIGHT once >2/3 of the kept set is online; round timeouts until then are expected."
 for _ in $(seq 1 60); do
   H="$(curl -s localhost:26657/status 2>/dev/null | grep -o '"latest_block_height":"[0-9]*"' | grep -o '[0-9]*' || true)"
   if [ -n "$H" ] && [ "$H" -ge "$RESTART_HEIGHT" ]; then say "OK — producing, height $H"; exit 0; fi

@@ -1,4 +1,3 @@
-d113cf59322453dadf30880abd560df4b472ab9403da23b09dd3a3319dc0ba77  pd-migrate-restart-v2.0.6.src.patch
-0bea0969e103094e522e767f1787e767fbaa609324dd94a3c53988a0dd10c845  pd-restart
-2fa8384ff30dc5a9d6eaf3f50b80b98bef6d95c67d7cc674354b1df1d2787b1b  candidate-genesis-penumbra-1-restart-12598601-disable.json
-# post_root (app_hash/genesisCheckpoint) = 95c5f00d71e5030c5ab7307727544c1d908002b6380786753da709a634da6a4a ; --disable, 2 removed (iqlusion, polkachu), KEEP=14
+c099ccb02a2136d5071fb22b1511eeec1588ad09676e0a0532d072f28b433ed4  candidate-genesis-penumbra-1-restart-12598602-disable.json
+# post_root (app_hash / genesis checkpoint) = 1db72ab20c0babdb8696f361d5b08d790abd8032ac64d762b138ddc80f0f99f7 ; --disable, 2 removed (iqlusion, polkachu), KEEP=14, initial_height=12598602
+# binary sha256: see SHA256SUMS attached to the v2.0.9 release

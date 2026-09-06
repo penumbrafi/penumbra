@@ -13,9 +13,9 @@ is unset.
 
 ## Files
 
-- `pd-migrate-restart-v2.0.6.src.patch` — the source diff, applied on this
-  branch. Kept here so operators can reproduce the binary from stock v2.0.6.
-- `candidate-genesis-penumbra-1-restart-12598601-disable.json` — the reference
+- `pd-migrate-restart-v2.0.6.src.patch` — the ORIGINAL (12598601) diff, kept for
+  history only. It lacks the empty-block fix; build from the branch or the tag.
+- `candidate-genesis-penumbra-1-restart-12598602-disable.json` — the reference
   genesis (539 bytes). Every operator's own `migrate-restart` must reproduce
   this exact sha256; that hash — not any prebuilt binary — is the cross-check.
 - `RELEASE-SHA256SUMS` — sha256 of the patch, the reference binary, and the
@@ -24,7 +24,7 @@ is unset.
   and service, stops all old-chain nodes, backs up + snapshots, runs the
   migration, verifies the genesis sha256, resets cometbft, restores
   `priv_validator_state` (tombstone guard), sets KEEP-only peers, starts, waits
-  for the height to pass 12598601.
+  for the height to pass 12598602.
 - `coordination.md` — the rally / coordination post (thresholds, deadline,
   committed set, timeline, roadmap).
 - `recovery-runbook.md` — the manual runbook behind the script.
@@ -35,10 +35,11 @@ is unset.
 ## Key values
 
 - chain-id: `penumbra-1` (unchanged)
-- initial_height: `12598601`
-- base: pd 2.0.6 (`f833ace`) + this patch
-- genesis sha256: `2fa8384ff30dc5a9d6eaf3f50b80b98bef6d95c67d7cc674354b1df1d2787b1b`
-- post_root: `95c5f00d71e5030c5ab7307727544c1d908002b6380786753da709a634da6a4a`
+- initial_height: `12598602` (the migration executes an empty application block 12598601
+  itself; see RESTART-STEPS.md, "Why the restart height is 12598602")
+- base: pd 2.0.6 (`f833ace`) + this branch, released as **pd 2.0.9**
+- genesis sha256: `c099ccb02a2136d5071fb22b1511eeec1588ad09676e0a0532d072f28b433ed4`
+- post_root: `1db72ab20c0babdb8696f361d5b08d790abd8032ac64d762b138ddc80f0f99f7`
 - removed from the active set (disabled, no penalty): the **2** clearly-departed
   offline validators only — **iqlusion** and **polkachu** — addresses in
   `penumbra-restart.sh` and `validator-map.tsv`. All other 14 validators are
@@ -47,18 +48,18 @@ is unset.
 
 ## Binary
 
-The simplest path is the **v2.0.8 recovery release** — cross-platform Linux
+The simplest path is the **v2.0.9 recovery release** — cross-platform Linux
 (x86_64 + arm64) `pd` that **includes `migrate-restart`** and is what the revived
 chain runs:
-<https://github.com/penumbrafi/penumbra/releases/tag/v2.0.8>
+<https://github.com/penumbrafi/penumbra/releases/tag/v2.0.9>
+(v2.0.8 and the 2.0.6 branch builds restart at 12598601 and cannot start the chain; do not use them)
 
 Or build from source (either produces a `pd` whose `migrate-restart` reproduces
 the genesis sha below — that hash, not the binary, is the cross-check):
 
 ```
-git checkout restart/penumbra-1-12598601   # (or the v2.0.8 tag)
+git checkout restart/penumbra-1-12598601   # (or the v2.0.9 tag)
 cargo build --release -p pd
-# or reproduce from stock: git checkout f833ace && git apply restart/pd-migrate-restart-v2.0.6.src.patch
 ```
 
 ## Deadline
@@ -70,5 +71,5 @@ client substitution. Bridged funds are not destroyed either way — only the
 automatic path closes.
 
 Do not improvise. Every old-chain node must be fully stopped before the new set
-starts, and `priv_validator_state` must survive the cometbft reset, or a
-validator that already signed 12598601 can be tombstoned.
+starts, and `priv_validator_state.json` must never be hand-edited; the migration
+raises it to 12598602 itself.

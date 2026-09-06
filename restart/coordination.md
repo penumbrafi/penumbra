@@ -76,8 +76,8 @@ Each operator, at go-time (a confirmed-step script does all of this):
 - run the distributed migration (`pd migrate-restart … --disable`) — it produces
 the genesis from your own state
 - verify the produced genesis sha256 matches the published value
-- reset cometbft, then restore priv_validator_state (tombstone guard)
-- set KEEP-only peers, start, confirm the height passes 12598601
+- check priv_validator_state now reads height 12598602 (the migration does it)
+- set KEEP-only peers, start, confirm the height passes 12598602
 
 Start order: antumbra.net + ghostinnet + Bryanlabs first (chain idle, no
 quorum), then rotko.net last — so the first block is signed by all four and is
@@ -85,19 +85,20 @@ usable for the noble update.
 
 Same validator key, same identity. Exact commands ship with the release.
 
-Safety: every old-chain node must be fully stopped before the new set starts,
-and priv_validator_state must be preserved across the reset. Validators that
-already signed height 12598601 can be tombstoned if this is done wrong. Follow
-the runbook exactly; do not improvise.
+Safety: every old-chain node must be fully stopped before the new set starts.
+Never hand-edit priv_validator_state.json. Follow the runbook exactly; do not
+improvise.
 
 ## Parameters
 
 - chain-id: penumbra-1 (unchanged)
-- initial_height: 12598601
-- base binary: pd 2.0.6 with the restart migration (reproducible from a 21 KB
-source patch)
+- initial_height: 12598602 (the migration executes an empty application block
+12598601 itself: every online validator already signed 12598601 on the halted
+chain and CometBFT would never let a restart at that height produce a block)
+- base binary: pd 2.0.9 (2.0.6 plus the restart migration; reproducible from
+the `restart/penumbra-1-12598601` branch / v2.0.9 tag)
 - genesis sha256:
-`2fa8384ff30dc5a9d6eaf3f50b80b98bef6d95c67d7cc674354b1df1d2787b1b` (539 bytes) —
+`c099ccb02a2136d5071fb22b1511eeec1588ad09676e0a0532d072f28b433ed4` (539 bytes) —
 every operator's migration must reproduce this exact hash
 - removed from the active set (disabled, no penalty): iqlusion, polkachu, and
 every operator not ticked in

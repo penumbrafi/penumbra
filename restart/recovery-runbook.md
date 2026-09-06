@@ -13,9 +13,10 @@ noble governance to substitute the client.
 
 ## Parameters
 - chain-id: `penumbra-1`
-- binary: `pd 2.0.6`
+- binary: `pd 2.0.9` (2.0.6 + `migrate-restart`)
 - halt height: `12598600`
-- restart height: `12598601`
+- restart height: `12598602` (the migration executes an empty application block 12598601; a
+  restart at 12598601 cannot start because every online validator already signed that height)
 - noble client: `07-tendermint-109`, trust_threshold 1/3
 
 ## Validator set
@@ -55,7 +56,7 @@ pd export  --home <pd_home> --export-directory <out>     # no --prune (unimpleme
 pd migrate --home <pd_home> --comet-home <comet_home> --ready-to-start
 ```
 In the resulting genesis: set the active validator set to the restarting operators, `initial_height`
-= 12598601, `genesis_time` = agreed go-time, chain-id stays `penumbra-1`. Publish `genesis.json` and
+= 12598602, `genesis_time` = last block time + 1 s (derived by the migration), chain-id stays `penumbra-1`. Publish `genesis.json` and
 its `sha256sum`.
 
 ### 2. Verify (independent)
@@ -69,7 +70,7 @@ cp -a <home> <home>.bak
 install the published genesis.json          # sha256 MUST match
 pd migrate --home <pd_home> --comet-home <comet_home> --ready-to-start
 systemctl start penumbra
-curl -s localhost:26657/status              # height climbs past 12598601
+curl -s localhost:26657/status              # height climbs past 12598602
 ```
 One instance per key. Never run two nodes on the same consensus key.
 
