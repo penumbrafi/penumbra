@@ -166,7 +166,7 @@ pub enum RootCommand {
         /// DRILL ONLY: override the chain id so the drill can never talk to mainnet.
         #[clap(long, hide = true)]
         unsafe_test_chain_id: Option<String>,
-        /// DRILL ONLY: replace a kept validator's consensus key, `OLD_B64=NEW_B64`. Repeatable.
+        /// DRILL ONLY: replace a kept validator's consensus key, `OLD_B64:NEW_B64`. Repeatable.
         #[clap(long, hide = true)]
         unsafe_test_rekey: Vec<String>,
     },

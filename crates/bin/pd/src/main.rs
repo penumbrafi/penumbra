@@ -520,8 +520,8 @@ async fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|pair| {
                     let (old, new) = pair
-                        .split_once('=')
-                        .with_context(|| format!("expected OLD_B64=NEW_B64, got {pair:?}"))?;
+                        .split_once(':')
+                        .with_context(|| format!("expected OLD_B64:NEW_B64, got {pair:?}"))?;
                     Ok((parse_key(old)?, parse_key(new)?))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
