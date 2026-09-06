@@ -13,8 +13,9 @@ is unset.
 
 ## Files
 
-- `pd-migrate-restart-v2.0.6.src.patch` — the ORIGINAL (12598601) diff, kept for
-  history only. It lacks the empty-block fix; build from the branch or the tag.
+- `pd-2.0.9-vs-2.0.6.src.patch` — the complete source diff between stock v2.0.6
+  (`f833ace`) and the v2.0.9 tag: `git diff f833ace v2.0.9 -- crates Cargo.toml`.
+  Review this; it is everything the recovery binary changes.
 - `candidate-genesis-penumbra-1-restart-12598602-disable.json` — the reference
   genesis (539 bytes). Every operator's own `migrate-restart` must reproduce
   this exact sha256; that hash — not any prebuilt binary — is the cross-check.

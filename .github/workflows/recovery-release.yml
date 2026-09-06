@@ -79,7 +79,7 @@ jobs:
           cp restart/recovery-runbook.md       "dist/$NAME/" || true
           cp restart/coordination.md           "dist/$NAME/" || true
           cp restart/upgrade-process.md        "dist/$NAME/" || true
-          cp restart/pd-migrate-restart-v2.0.6.src.patch "dist/$NAME/" || true
+          cp restart/pd-2.0.9-vs-2.0.6.src.patch "dist/$NAME/" || true
           chmod +x "dist/$NAME/pd" "dist/$NAME/penumbra-restart.sh"
 
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
