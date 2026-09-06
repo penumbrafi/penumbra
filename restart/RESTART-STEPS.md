@@ -96,6 +96,11 @@ sudo systemctl stop penumbra   # or however you run them; stop BOTH pd and comet
 cp -a node0 node0.pre-restart
 
 # 3. Migrate: disable the 2 departed validators, write the checkpoint genesis.
+#    Paths are relative to network_data (default ~/.penumbra/network_data);
+#    run from there, or pass absolute paths. `pd` CREATES an empty store if
+#    --home points at nothing, and then fails with "Missing block_height".
+#    This preflight must print a file, not an error:
+ls node0/pd/rocksdb/CURRENT
 ulimit -n 1048576
 pd migrate-restart --home node0/pd --comet-home node0/cometbft \
   --remove 3969C0511C6ABE474757FEAB7C1B4004796D7E72 \
@@ -104,6 +109,11 @@ pd migrate-restart --home node0/pd --comet-home node0/cometbft \
 #    log must show: 2x "removed validator" (iqlusion, polkachu), 14x "keeping",
 #    "empty block 12598601 committed", then "successful migration!" with
 #    post_height=12598602 and post_root=1db72ab20c0babdb8696f361d5b08d790abd8032ac64d762b138ddc80f0f99f7
+
+#    If it fails with "Caused by: Missing block_height": --home did not point
+#    at your pd state (wrong cwd or wrong path). pd has created a fresh empty
+#    rocksdb at that wrong path: delete it (rm -r <wrong>/rocksdb), then rerun
+#    with the correct --home. Your real state is untouched.
 
 # 4. VERIFY the produced genesis — MUST equal the sha below, or STOP and ask.
 sha256sum node0/cometbft/config/genesis.json
