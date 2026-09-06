@@ -116,7 +116,9 @@ jobs:
       - name: Publish GitHub Release
         if: ${{ steps.tag.outputs.tag != '' }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The built-in token cannot create releases in this repository (fork);
+          # RELEASE_TOKEN is a repo secret with contents:write.
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.tag.outputs.tag }}
           NAME: ${{ steps.bundle.outputs.name }}
           VER: ${{ steps.bundle.outputs.ver }}
