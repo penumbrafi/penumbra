@@ -1,0 +1,689 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 8ae84a7..9fbdad5 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2921,8 +2921,6 @@ version = "0.15.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "bf151400ff0baff5465007dd2f3e717f3fe502074ca563069ce3a6629d07b289"
+ dependencies = [
+- "allocator-api2",
+- "equivalent",
+  "foldhash",
+ ]
+ 
+@@ -4600,17 +4598,6 @@ version = "0.3.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
+ 
+-[[package]]
+-name = "openapiv3"
+-version = "2.0.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "cc02deea53ffe807708244e5914f6b099ad7015a207ee24317c22112e17d9c5c"
+-dependencies = [
+- "indexmap 2.7.1",
+- "serde",
+- "serde_json",
+-]
+-
+ [[package]]
+ name = "openssl"
+ version = "0.10.64"
+@@ -6693,45 +6680,6 @@ dependencies = [
+  "plotters-backend",
+ ]
+ 
+-[[package]]
+-name = "pmonitor"
+-version = "2.0.6"
+-dependencies = [
+- "anyhow",
+- "assert_cmd",
+- "camino",
+- "clap",
+- "colored",
+- "directories",
+- "futures",
+- "indicatif",
+- "once_cell",
+- "pcli",
+- "penumbra-sdk-app",
+- "penumbra-sdk-asset",
+- "penumbra-sdk-compact-block",
+- "penumbra-sdk-keys",
+- "penumbra-sdk-num",
+- "penumbra-sdk-proto",
+- "penumbra-sdk-shielded-pool",
+- "penumbra-sdk-stake",
+- "penumbra-sdk-tct",
+- "penumbra-sdk-view",
+- "process-compose-openapi-client",
+- "regex",
+- "rustls 0.23.21",
+- "serde",
+- "serde_json",
+- "tempfile",
+- "tokio",
+- "toml 0.7.8",
+- "tonic",
+- "tracing",
+- "tracing-subscriber 0.3.18",
+- "url",
+- "uuid",
+-]
+-
+ [[package]]
+ name = "polling"
+ version = "3.7.4"
+@@ -6976,21 +6924,6 @@ dependencies = [
+  "unicode-ident",
+ ]
+ 
+-[[package]]
+-name = "process-compose-openapi-client"
+-version = "1.40.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5fe1021aa3ae3cb55ce80be3ff0f4f16cf0726d5c8af5c99fd6fc1a2985ba056"
+-dependencies = [
+- "prettyplease",
+- "progenitor",
+- "progenitor-client",
+- "reqwest 0.12.9",
+- "serde",
+- "serde_json",
+- "syn 2.0.96",
+-]
+-
+ [[package]]
+ name = "procfs"
+ version = "0.17.0"
+@@ -7013,72 +6946,6 @@ dependencies = [
+  "hex",
+ ]
+ 
+-[[package]]
+-name = "progenitor"
+-version = "0.8.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "293df5b79211fbf0c1ebad6513ba451d267e9c15f5f19ee5d3da775e2dd27331"
+-dependencies = [
+- "progenitor-client",
+- "progenitor-impl",
+- "progenitor-macro",
+-]
+-
+-[[package]]
+-name = "progenitor-client"
+-version = "0.8.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d4a5db54eac3cae7007a0785854bc3e89fd418cca7dfc2207b99b43979154c1b"
+-dependencies = [
+- "bytes",
+- "futures-core",
+- "percent-encoding",
+- "reqwest 0.12.9",
+- "serde",
+- "serde_json",
+- "serde_urlencoded",
+-]
+-
+-[[package]]
+-name = "progenitor-impl"
+-version = "0.8.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d85934a440963a69f9f04f48507ff6e7aa2952a5b2d8f96cc37fa3dd5c270f66"
+-dependencies = [
+- "heck 0.5.0",
+- "http 1.2.0",
+- "indexmap 2.7.1",
+- "openapiv3",
+- "proc-macro2 1.0.93",
+- "quote",
+- "regex",
+- "schemars",
+- "serde",
+- "serde_json",
+- "syn 2.0.96",
+- "thiserror 1.0.69",
+- "typify",
+- "unicode-ident",
+-]
+-
+-[[package]]
+-name = "progenitor-macro"
+-version = "0.8.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d99a5a259e2d65a4933054aa51717c70b6aba0522695731ac354a522124efc9b"
+-dependencies = [
+- "openapiv3",
+- "proc-macro2 1.0.93",
+- "progenitor-impl",
+- "quote",
+- "schemars",
+- "serde",
+- "serde_json",
+- "serde_tokenstream",
+- "serde_yaml",
+- "syn 2.0.96",
+-]
+-
+ [[package]]
+ name = "proptest"
+ version = "1.6.0"
+@@ -7458,16 +7325,6 @@ version = "0.8.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
+ 
+-[[package]]
+-name = "regress"
+-version = "0.10.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "78ef7fa9ed0256d64a688a3747d0fef7a88851c18a5e1d57f115f38ec2e09366"
+-dependencies = [
+- "hashbrown 0.15.2",
+- "memchr",
+-]
+-
+ [[package]]
+ name = "relative-path"
+ version = "1.9.3"
+@@ -7980,32 +7837,6 @@ dependencies = [
+  "parking_lot",
+ ]
+ 
+-[[package]]
+-name = "schemars"
+-version = "0.8.21"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "09c024468a378b7e36765cd36702b7a90cc3cba11654f6685c8f233408e89e92"
+-dependencies = [
+- "chrono",
+- "dyn-clone",
+- "schemars_derive",
+- "serde",
+- "serde_json",
+- "uuid",
+-]
+-
+-[[package]]
+-name = "schemars_derive"
+-version = "0.8.21"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b1eee588578aff73f856ab961cd2f79e36bc45d7ded33a7562adba4667aecc0e"
+-dependencies = [
+- "proc-macro2 1.0.93",
+- "quote",
+- "serde_derive_internals",
+- "syn 2.0.96",
+-]
+-
+ [[package]]
+ name = "scopeguard"
+ version = "1.2.0"
+@@ -8063,9 +7894,6 @@ name = "semver"
+ version = "1.0.23"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "61697e0a1c7e512e84a621326239844a24d8207b4669b41bc18b32ea5cbf988b"
+-dependencies = [
+- "serde",
+-]
+ 
+ [[package]]
+ name = "serde"
+@@ -8108,17 +7936,6 @@ dependencies = [
+  "syn 2.0.96",
+ ]
+ 
+-[[package]]
+-name = "serde_derive_internals"
+-version = "0.29.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
+-dependencies = [
+- "proc-macro2 1.0.93",
+- "quote",
+- "syn 2.0.96",
+-]
+-
+ [[package]]
+ name = "serde_json"
+ version = "1.0.138"
+@@ -8162,18 +7979,6 @@ dependencies = [
+  "serde",
+ ]
+ 
+-[[package]]
+-name = "serde_tokenstream"
+-version = "0.2.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "64060d864397305347a78851c51588fd283767e7e7589829e8121d65512340f1"
+-dependencies = [
+- "proc-macro2 1.0.93",
+- "quote",
+- "serde",
+- "syn 2.0.96",
+-]
+-
+ [[package]]
+ name = "serde_unit_struct"
+ version = "0.1.3"
+@@ -8235,19 +8040,6 @@ dependencies = [
+  "syn 2.0.96",
+ ]
+ 
+-[[package]]
+-name = "serde_yaml"
+-version = "0.9.34+deprecated"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+-dependencies = [
+- "indexmap 2.7.1",
+- "itoa",
+- "ryu",
+- "serde",
+- "unsafe-libyaml",
+-]
+-
+ [[package]]
+ name = "serdect"
+ version = "0.2.0"
+@@ -9670,53 +9462,6 @@ version = "1.17.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
+ 
+-[[package]]
+-name = "typify"
+-version = "0.2.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b4c644dda9862f0fef3a570d8ddb3c2cfb1d5ac824a1f2ddfa7bc8f071a5ad8a"
+-dependencies = [
+- "typify-impl",
+- "typify-macro",
+-]
+-
+-[[package]]
+-name = "typify-impl"
+-version = "0.2.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d59ab345b6c0d8ae9500b9ff334a4c7c0d316c1c628dc55726b95887eb8dbd11"
+-dependencies = [
+- "heck 0.5.0",
+- "log",
+- "proc-macro2 1.0.93",
+- "quote",
+- "regress",
+- "schemars",
+- "semver",
+- "serde",
+- "serde_json",
+- "syn 2.0.96",
+- "thiserror 1.0.69",
+- "unicode-ident",
+-]
+-
+-[[package]]
+-name = "typify-macro"
+-version = "0.2.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "785e2cdcef0df8160fdd762ed548a637aaec1e83704fdbc14da0df66013ee8d0"
+-dependencies = [
+- "proc-macro2 1.0.93",
+- "quote",
+- "schemars",
+- "semver",
+- "serde",
+- "serde_json",
+- "serde_tokenstream",
+- "syn 2.0.96",
+- "typify-impl",
+-]
+-
+ [[package]]
+ name = "uint"
+ version = "0.9.5"
+@@ -9805,12 +9550,6 @@ dependencies = [
+  "subtle",
+ ]
+ 
+-[[package]]
+-name = "unsafe-libyaml"
+-version = "0.2.11"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
+-
+ [[package]]
+ name = "untrusted"
+ version = "0.9.0"
+@@ -9837,7 +9576,6 @@ checksum = "5de17fd2f7da591098415cff336e12965a28061ddace43b59cb3c430179c9439"
+ dependencies = [
+  "getrandom",
+  "rand",
+- "serde",
+ ]
+ 
+ [[package]]
+diff --git a/Cargo.toml b/Cargo.toml
+index 70e163d..3619c06 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -12,7 +12,7 @@ members = [
+   "crates/bin/pclientd",
+   "crates/bin/pd",
+   "crates/bin/pindexer",
+-  "crates/bin/pmonitor",
++  # "crates/bin/pmonitor",  # dropped: unresolvable dev-dep, not needed for pd
+   "crates/cnidarium-component",
+   "crates/core/app",
+   "crates/core/app-tests",
+diff --git a/crates/bin/pd/src/cli.rs b/crates/bin/pd/src/cli.rs
+index 52e3b1d..9df5a74 100644
+--- a/crates/bin/pd/src/cli.rs
++++ b/crates/bin/pd/src/cli.rs
+@@ -144,6 +144,26 @@ pub enum RootCommand {
+         #[clap(long, display_order = 1000)]
+         ready_to_start: bool,
+     },
++
++    /// Coordinated-restart migration for a chain halted by liveness loss: remove the given
++    /// validators from the active set (Jailed, or Disabled with --disable) and write a
++    /// checkpoint genesis. Does not require the halt bit. EXPERT MODE: all participants must
++    /// run the identical binary with the identical --remove list.
++    MigrateRestart {
++        /// The home directory of the full node (contains `rocksdb`).
++        #[clap(long, env = "PENUMBRA_PD_HOME", display_order = 100)]
++        home: Option<PathBuf>,
++        /// If set, also write the genesis into this CometBFT home and bump its
++        /// priv_validator_state height.
++        #[clap(long, display_order = 200)]
++        comet_home: Option<PathBuf>,
++        /// CometBFT consensus address (40 hex chars) of a validator to remove. Repeatable.
++        #[clap(long = "remove", required = true, display_order = 300)]
++        remove: Vec<String>,
++        /// Mark removed validators Disabled (no downtime penalty) instead of Jailed.
++        #[clap(long, display_order = 400)]
++        disable: bool,
++    },
+ }
+ 
+ #[derive(Debug, Subcommand)]
+diff --git a/crates/bin/pd/src/main.rs b/crates/bin/pd/src/main.rs
+index 6364623..7dc839b 100644
+--- a/crates/bin/pd/src/main.rs
++++ b/crates/bin/pd/src/main.rs
+@@ -471,6 +471,40 @@ async fn main() -> anyhow::Result<()> {
+                 tracing::info!("export complete: {}", export_directory.display());
+             }
+         }
++        RootCommand::MigrateRestart {
++            home,
++            comet_home,
++            remove,
++            disable,
++        } => {
++            let (pd_home, comet_home) = match home {
++                Some(h) => (h, comet_home),
++                None => {
++                    let base = get_network_dir(None).join("node0");
++                    (base.join("pd"), Some(base.join("cometbft")))
++                }
++            };
++            let remove = remove
++                .iter()
++                .map(|s| {
++                    let bytes = hex::decode(s.trim())
++                        .with_context(|| format!("invalid hex cometbft address: {s}"))?;
++                    let arr: [u8; 20] = bytes
++                        .try_into()
++                        .map_err(|_| anyhow!("cometbft address must be 20 bytes: {s}"))?;
++                    Ok(arr)
++                })
++                .collect::<anyhow::Result<Vec<[u8; 20]>>>()?;
++            let new_state = if disable {
++                penumbra_sdk_stake::validator::State::Disabled
++            } else {
++                penumbra_sdk_stake::validator::State::Jailed
++            };
++            tracing::info!(?pd_home, ?comet_home, n_remove = remove.len(), ?new_state, "running restart-fork migration");
++            pd::migrate::restart_fork::run(pd_home, comet_home, remove, new_state)
++                .await
++                .context("restart-fork migration failed")?;
++        }
+         RootCommand::Migrate {
+             home,
+             comet_home,
+diff --git a/crates/bin/pd/src/migrate.rs b/crates/bin/pd/src/migrate.rs
+index e780b29..cfef0b7 100644
+--- a/crates/bin/pd/src/migrate.rs
++++ b/crates/bin/pd/src/migrate.rs
+@@ -9,6 +9,7 @@ mod mainnet2;
+ mod mainnet3;
+ mod mainnet4;
+ mod reset_halt_bit;
++pub mod restart_fork;
+ mod simple;
+ mod testnet72;
+ mod testnet74;
+@@ -249,8 +250,11 @@ fn adjust_priv_validator_state(comet_home: &Path, initial_height: u64) -> anyhow
+             &serde_json::to_string_pretty(&new_state)?,
+         )?;
+     } else {
+-        anyhow::bail!(
+-            "priv_validator_state height {} is already greater than or equal to initial_height {}",
++        // restart-fork: a validator that already signed at `initial_height` on the halted chain
++        // MUST keep its last-signed height/round/step, otherwise it could double-sign that height
++        // on the restarted chain and be tombstoned. Leave the file untouched.
++        tracing::warn!(
++            "priv_validator_state height {} is already >= initial_height {}; leaving priv_validator_state.json untouched (prevents double-signing)",
+             current_height,
+             initial_height
+         );
+diff --git a/crates/bin/pd/src/migrate/restart_fork.rs b/crates/bin/pd/src/migrate/restart_fork.rs
+new file mode 100644
+index 0000000..da4ed18
+--- /dev/null
++++ b/crates/bin/pd/src/migrate/restart_fork.rs
+@@ -0,0 +1,192 @@
++//! Coordinated-restart ("hard-fork") migration for a chain halted by liveness loss.
++//!
++//! Removes the given validators from the active set (Active -> Jailed, or Disabled) so that the
++//! remaining validators can resume consensus, and writes a checkpoint genesis exactly like
++//! `mainnet4.rs` does for a regular upgrade. The app version is NOT bumped.
++//!
++//! Unlike `Migration::migrate`, this does not require the chain halt bit to be set (a liveness
++//! halt never sets it), but it keeps the state-version == block-height corruption check.
++use std::path::PathBuf;
++
++use anyhow::{ensure, Context, Result};
++use cnidarium::{StateDelta, Storage};
++use futures::StreamExt as _;
++use jmt::RootHash;
++use penumbra_sdk_app::app::StateReadExt as _;
++use penumbra_sdk_app::SUBSTORE_PREFIXES;
++use penumbra_sdk_governance::{StateReadExt as _, StateWriteExt as _};
++use penumbra_sdk_proto::StateWriteProto as _;
++use penumbra_sdk_sct::component::clock::{EpochManager as _, EpochRead as _};
++use penumbra_sdk_stake::component::stake::ConsensusIndexRead as _;
++use penumbra_sdk_stake::component::validator_handler::{
++    ValidatorDataRead as _, ValidatorManager as _,
++};
++use penumbra_sdk_stake::{state_key, validator, CurrentConsensusKeys};
++
++use crate::network::generate::NetworkConfig;
++
++pub async fn run(
++    pd_home: PathBuf,
++    comet_home: Option<PathBuf>,
++    remove: Vec<[u8; 20]>,
++    new_state: validator::State,
++) -> Result<()> {
++    ensure!(
++        matches!(
++            new_state,
++            validator::State::Jailed | validator::State::Disabled
++        ),
++        "removed validators must become Jailed or Disabled"
++    );
++    ensure!(!remove.is_empty(), "no validators to remove");
++
++    let storage = Storage::load(pd_home.join("rocksdb"), SUBSTORE_PREFIXES.to_vec()).await?;
++    let latest_version = storage.latest_version();
++    let initial_state = storage.latest_snapshot();
++    let pre_height = initial_state.get_block_height().await?;
++    ensure!(
++        latest_version == pre_height,
++        "local chain state version is corrupted: {} != {}",
++        latest_version,
++        pre_height
++    );
++    let halted = initial_state.is_chain_halted().await;
++    let chain_id = initial_state.get_chain_id().await?;
++    let genesis_start = initial_state
++        .get_current_block_timestamp()
++        .await
++        .context("reading last block timestamp")?;
++    let pre_root: RootHash = initial_state.root_hash().await?.into();
++    let post_height = pre_height.wrapping_add(1);
++    tracing::info!(
++        ?pre_root,
++        pre_height,
++        post_height,
++        halted,
++        %chain_id,
++        %genesis_start,
++        "restart-fork: pre-migration state"
++    );
++
++    let mut delta = StateDelta::new(initial_state);
++
++    // 1. Move every REMOVE validator out of Active. Must happen BEFORE put_block_height(0):
++    //    the (Active, Jailed) transition reads the current height to schedule unbonding.
++    for addr in &remove {
++        let def = delta
++            .get_validator_definition_by_cometbft_address(addr)
++            .await?
++            .with_context(|| {
++                format!(
++                    "no validator with cometbft address {}",
++                    hex::encode_upper(addr)
++                )
++            })?;
++        let id = def.identity_key;
++        let (old, new) = delta.set_validator_state(&id, new_state.clone()).await?;
++        ensure!(
++            old == validator::State::Active,
++            "validator {} ({}) was {:?}, expected Active",
++            id,
++            hex::encode_upper(addr),
++            old
++        );
++        tracing::info!(
++            %id,
++            cometbft_address = hex::encode_upper(addr),
++            name = def.name,
++            ?old,
++            ?new,
++            "restart-fork: removed validator from active set"
++        );
++    }
++
++    // 2. Rewrite CurrentConsensusKeys to exactly the validators still Active. Otherwise
++    //    build_cometbft_validator_updates() emits power-0 entries for the removed keys at
++    //    InitChain and CometBFT's NewValidatorSet panics on them.
++    let mut keep_keys = Vec::new();
++    let mut ids = delta.consensus_set_stream()?;
++    while let Some(id) = ids.next().await {
++        let id = id?;
++        let state = delta
++            .get_validator_state(&id)
++            .await?
++            .with_context(|| format!("validator {id} has no state"))?;
++        if state != validator::State::Active {
++            continue;
++        }
++        let consensus_key = delta
++            .fetch_validator_consensus_key(&id)
++            .await?
++            .with_context(|| format!("active validator {id} has no consensus key"))?;
++        let power = delta
++            .get_validator_power(&id)
++            .await?
++            .with_context(|| format!("active validator {id} has no power"))?;
++        ensure!(power.value() > 0, "active validator {id} has zero power");
++        let comet_addr = tendermint::account::Id::from(consensus_key);
++        tracing::info!(
++            %id,
++            cometbft_address = %comet_addr,
++            power = power.value(),
++            "restart-fork: keeping active validator"
++        );
++        keep_keys.push(consensus_key);
++    }
++    ensure!(!keep_keys.is_empty(), "no active validators would remain");
++    let n_keep = keep_keys.len();
++    delta.put(
++        state_key::consensus_update::consensus_keys().to_owned(),
++        CurrentConsensusKeys {
++            consensus_keys: keep_keys,
++        },
++    );
++
++    // 3. Same tail as mainnet4.rs, minus migrate_app_version (APP_VERSION stays as-is).
++    delta.ready_to_start();
++    delta.put_block_height(0u64);
++    let post_root = storage.commit_in_place(delta).await?;
++    storage.release().await;
++    tracing::info!(?post_root, n_keep, "restart-fork: post-migration root hash");
++
++    // 4. Checkpoint genesis, identical in shape to mainnet4.rs.
++    let app_state = penumbra_sdk_app::genesis::Content {
++        chain_id,
++        ..Default::default()
++    };
++    let mut genesis = NetworkConfig::make_genesis(app_state).expect("can make genesis");
++    genesis.app_hash = post_root
++        .0
++        .to_vec()
++        .try_into()
++        .expect("infallible conversion");
++    genesis.initial_height = post_height as i64;
++    genesis.genesis_time = genesis_start;
++    let genesis = NetworkConfig::make_checkpoint(genesis, Some(post_root.0.to_vec()));
++    let genesis_json = serde_json::to_string(&genesis).expect("can serialize genesis");
++    tracing::info!("genesis: {}", genesis_json);
++    let genesis_path = pd_home.join("genesis.json");
++    std::fs::write(&genesis_path, genesis_json).context("writing genesis.json")?;
++
++    let validator_state_path = pd_home.join("priv_validator_state.json");
++    std::fs::write(
++        validator_state_path,
++        crate::network::generate::NetworkValidator::initial_state(),
++    )
++    .context("writing priv_validator_state.json")?;
++
++    if let Some(comet_home) = comet_home {
++        crate::migrate::migrate_comet_data(comet_home, genesis_path).await?;
++    }
++
++    tracing::info!(
++        pre_height,
++        post_height,
++        ?pre_root,
++        ?post_root,
++        removed = remove.len(),
++        kept = n_keep,
++        "restart-fork: successful migration!"
++    );
++    Ok(())
++}
+diff --git a/crates/core/component/stake/src/component/validator_handler.rs b/crates/core/component/stake/src/component/validator_handler.rs
+index f5e5081..aa01528 100644
+--- a/crates/core/component/stake/src/component/validator_handler.rs
++++ b/crates/core/component/stake/src/component/validator_handler.rs
+@@ -1,5 +1,5 @@
+-pub(crate) mod validator_manager;
+-pub(crate) use validator_manager::ValidatorManager;
++pub mod validator_manager;
++pub use validator_manager::ValidatorManager;
+ 
+ pub mod validator_store;
+ pub use validator_store::ValidatorDataRead;
