@@ -6,7 +6,7 @@ name: recovery-release
 #
 # The binary is a convenience. The real cross-check for operators is the genesis
 # sha256 that their own `pd migrate-restart` reproduces
-# (386a4f58f53316e7c410f860bba6ee5c8cf0acd97bca808cb874a80b951788a8), not this
+# (2fa8384ff30dc5a9d6eaf3f50b80b98bef6d95c67d7cc674354b1df1d2787b1b), not this
 # artifact. Anyone can rebuild from source and sha-match instead of trusting it.
 
 on:
@@ -31,7 +31,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04   # glibc 2.35: portable down to older hosts than bookworm
     env:
-      GENESIS_SHA256: 386a4f58f53316e7c410f860bba6ee5c8cf0acd97bca808cb874a80b951788a8
+      GENESIS_SHA256: 2fa8384ff30dc5a9d6eaf3f50b80b98bef6d95c67d7cc674354b1df1d2787b1b
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,21 +124,55 @@ jobs:
           set -euo pipefail
           NOTES="$RUNNER_TEMP/notes.md"
           cat > "$NOTES" <<EOF
-          penumbra-1 recovery build — pd ${VER} with the \`migrate-restart\` subcommand.
+          # penumbra-1 coordinated restart — pd ${VER} (\`migrate-restart\`)
 
-          Coordinated restart of penumbra-1 after the liveness halt at height
-          12598600. This continues the same chain-id; all balances and delegations
-          are preserved. See \`restart/README.md\`.
+          penumbra-1 halted at height **12598600**. This continues the **same
+          chain-id** — all balances and delegations preserved — by disabling the
+          two departed validators (iqlusion, polkachu) and keeping the other 14.
 
-          Verify, do not trust:
-          - Reference genesis sha256: \`${GENESIS_SHA256}\`
-          - Your own \`pd migrate-restart\` must reproduce that exact hash — that,
-            not this binary, is the cross-check.
-          - Reproduce the binary from source: \`cargo build --release --locked -p pd\`
-            on this tag, or apply \`restart/pd-migrate-restart-v2.0.6.src.patch\` to
-            stock v2.0.6 (\`f833ace\`).
+          **Verify, do not trust.** The cross-check is that your own
+          \`pd migrate-restart\` reproduces the exact genesis hash below — not this
+          binary. Reproduce the binary: \`cargo build --release --locked -p pd\` on
+          this tag (or apply \`restart/pd-migrate-restart-v2.0.6.src.patch\` to
+          stock v2.0.6 \`f833ace\`). Built on ubuntu-22.04 (glibc 2.35), x86_64-linux-gnu.
 
-          Built on ubuntu-22.04 (glibc 2.35), x86_64-linux-gnu.
+          - **genesis sha256:** \`${GENESIS_SHA256}\`
+          - **app_hash / post_root:** \`95c5f00d71e5030c5ab7307727544c1d908002b6380786753da709a634da6a4a\`
+
+          ## What each validator does
+
+          The script \`restart/penumbra-restart.sh\` walks all of this as confirmed
+          steps (detects your homes, refuses on mismatch). Manual equivalent:
+
+          \`\`\`sh
+          # 0. Get pd 2.0.6 + migrate-restart (this release's binary, or build from source above).
+          #    STOP your old pd AND cometbft. Do NOT start any old-chain node again.
+          # 1. Back up signing state + snapshot the node:
+          cp -a node0/cometbft/data/priv_validator_state.json /safe/pvs.json
+          #    (zfs snapshot / full copy of node0 recommended)
+          # 2. Migrate (ulimit -n high; ~10s):
+          ulimit -n 1048576
+          pd migrate-restart --home node0/pd --comet-home node0/cometbft \\
+            --remove 3969C0511C6ABE474757FEAB7C1B4004796D7E72 \\
+            --remove 9B2D4391131198750FF28EE73EC953ECFCFD06EF \\
+            --disable
+          # 3. VERIFY the produced genesis — MUST equal the sha above, or stop:
+          sha256sum node0/cometbft/config/genesis.json
+          # 4. Reset cometbft data, then RESTORE signing state (tombstone guard):
+          cometbft unsafe-reset-all --home node0/cometbft
+          cp -a /safe/pvs.json node0/cometbft/data/priv_validator_state.json
+          # 5. config.toml: persistent_peers = KEEP validators only, pex = false (first blocks).
+          # 6. Start pd (this binary), then cometbft, in the go-window.
+          \`\`\`
+
+          **Only hard rule:** stop your old node before starting the migrated one
+          (running both = double-sign = tombstone). **If you're late**, just do
+          steps 0–6 whenever and your node will sync to the tip and resume signing —
+          you don't need to hit the go-window exactly. RPC/full nodes run steps 0–3
+          (skip the pvs restore) to follow the chain.
+
+          Expect ~3 timeout rounds (~1 min) before block 12598601 lands, since keys
+          already signed rounds 0–2 at that height. See \`restart/README.md\`.
           EOF
           gh release create "$TAG" \
             --target "${{ github.sha }}" \
