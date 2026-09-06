@@ -45,10 +45,18 @@ is unset.
   **kept**; uncommitted operators can rejoin by simply starting their migrated
   node (no re-bond). Committed + online ≈ 73% of the kept set (> 2/3).
 
-## Build
+## Binary
+
+The simplest path is the **v2.0.8 recovery release** — cross-platform Linux
+(x86_64 + arm64) `pd` that **includes `migrate-restart`** and is what the revived
+chain runs:
+<https://github.com/penumbrafi/penumbra/releases/tag/v2.0.8>
+
+Or build from source (either produces a `pd` whose `migrate-restart` reproduces
+the genesis sha below — that hash, not the binary, is the cross-check):
 
 ```
-git checkout restart/penumbra-1-12598601
+git checkout restart/penumbra-1-12598601   # (or the v2.0.8 tag)
 cargo build --release -p pd
 # or reproduce from stock: git checkout f833ace && git apply restart/pd-migrate-restart-v2.0.6.src.patch
 ```

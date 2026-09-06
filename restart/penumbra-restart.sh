@@ -29,7 +29,9 @@ confirm(){ [ "$(ask '   proceed? [y/N]')" = y ] || die "aborted at step: $*"; }
 
 [ $# -ge 1 ] || die "usage: $0 <pd-restart-binary> [<cometbft-binary>]"
 PDBIN="$1"; [ -x "$PDBIN" ] || die "pd-restart binary not executable: $PDBIN"
-"$PDBIN" --version 2>&1 | grep -q '2.0.6' || die "pd binary is not 2.0.6"
+# Accept the 2.0.6 restart build or the cross-platform v2.0.8 recovery build
+# (same migrate-restart code; the genesis sha below is the real cross-check).
+"$PDBIN" --version 2>&1 | grep -qE '2\.0\.[68]' || die "pd binary is not 2.0.6 / 2.0.8"
 CBIN="${2:-$(command -v cometbft || true)}"
 
 detect_pd_home(){ local c; for c in "${PENUMBRA_PD_HOME:-}" /opt/penumbra/network_data/node0/pd \
