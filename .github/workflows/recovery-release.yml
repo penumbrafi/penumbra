@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: false        # pd does not need the web LFS assets
+          lfs: true         # pd build.rs embeds assets/minifront.zip (LFS)
 
       # Build deps, matching deployments/containerfiles/Dockerfile. No protoc:
       # the proto crate ships generated code.
