@@ -57,6 +57,9 @@ sha256sum /usr/local/bin/pd   # compare with SHA256SUMS on the release page
 pd --version    # -> pd 2.0.9
 ```
 
+Every code change versus stock v2.0.6 is in one diff:
+<https://github.com/penumbrafi/penumbra/compare/v2.0.6...v2.0.9>
+
 Or build from source (see
 [`restart/README.md`](https://github.com/penumbrafi/penumbra/blob/restart/penumbra-1-12598601/restart/README.md)).
 Either way `pd migrate-restart` must reproduce the genesis sha above.

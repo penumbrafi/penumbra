@@ -133,7 +133,8 @@ jobs:
           **Verify, do not trust.** The cross-check is that your own
           \`pd migrate-restart\` reproduces the exact genesis hash below — not this
           binary. Reproduce the binary: \`cargo build --release --locked -p pd\` on
-          this tag. Built on ubuntu-22.04 (glibc 2.35).
+          this tag. Built on ubuntu-22.04 (glibc 2.35). Every code change versus
+          stock v2.0.6: https://github.com/penumbrafi/penumbra/compare/v2.0.6...v2.0.9
 
           **Restart height is 12598602.** Every validator that was online at the
           halt already signed height 12598601 on the halted chain, and CometBFT
