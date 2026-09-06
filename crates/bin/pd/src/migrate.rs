@@ -9,6 +9,7 @@ mod mainnet2;
 mod mainnet3;
 mod mainnet4;
 mod reset_halt_bit;
+pub mod restart_fork;
 mod simple;
 mod testnet72;
 mod testnet74;
@@ -249,8 +250,11 @@ fn adjust_priv_validator_state(comet_home: &Path, initial_height: u64) -> anyhow
             &serde_json::to_string_pretty(&new_state)?,
         )?;
     } else {
-        anyhow::bail!(
-            "priv_validator_state height {} is already greater than or equal to initial_height {}",
+        // restart-fork: a validator that already signed at `initial_height` on the halted chain
+        // MUST keep its last-signed height/round/step, otherwise it could double-sign that height
+        // on the restarted chain and be tombstoned. Leave the file untouched.
+        tracing::warn!(
+            "priv_validator_state height {} is already >= initial_height {}; leaving priv_validator_state.json untouched (prevents double-signing)",
             current_height,
             initial_height
         );

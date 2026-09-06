@@ -471,6 +471,40 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("export complete: {}", export_directory.display());
             }
         }
+        RootCommand::MigrateRestart {
+            home,
+            comet_home,
+            remove,
+            disable,
+        } => {
+            let (pd_home, comet_home) = match home {
+                Some(h) => (h, comet_home),
+                None => {
+                    let base = get_network_dir(None).join("node0");
+                    (base.join("pd"), Some(base.join("cometbft")))
+                }
+            };
+            let remove = remove
+                .iter()
+                .map(|s| {
+                    let bytes = hex::decode(s.trim())
+                        .with_context(|| format!("invalid hex cometbft address: {s}"))?;
+                    let arr: [u8; 20] = bytes
+                        .try_into()
+                        .map_err(|_| anyhow!("cometbft address must be 20 bytes: {s}"))?;
+                    Ok(arr)
+                })
+                .collect::<anyhow::Result<Vec<[u8; 20]>>>()?;
+            let new_state = if disable {
+                penumbra_sdk_stake::validator::State::Disabled
+            } else {
+                penumbra_sdk_stake::validator::State::Jailed
+            };
+            tracing::info!(?pd_home, ?comet_home, n_remove = remove.len(), ?new_state, "running restart-fork migration");
+            pd::migrate::restart_fork::run(pd_home, comet_home, remove, new_state)
+                .await
+                .context("restart-fork migration failed")?;
+        }
         RootCommand::Migrate {
             home,
             comet_home,
