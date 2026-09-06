@@ -131,6 +131,10 @@ peer restrictions if you prefer). Un-migrated nodes will reject the first block
 
 ## Why this is safe
 
+- This exact sequence (migrate-restart removing a departed validator → cometbft
+  reset → restore `priv_validator_state` → restart) was drilled on a multi-validator
+  devnet with the v2.0.8 binary: the kept validator resumed producing blocks past
+  the restart height with no tombstone, no double-sign, and no re-init error.
 - Same chain-id, all balances/delegations preserved; removed validators are only
   disabled (no penalty) and keep their funds — they can re-enable later.
 - Committed + online validators are ~73% of the kept active set (> the 2/3 needed
