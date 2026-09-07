@@ -6671,6 +6671,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "pmonitor"
+version = "2.0.10"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "camino",
+ "clap",
+ "colored",
+ "directories",
+ "futures",
+ "indicatif",
+ "once_cell",
+ "pcli",
+ "penumbra-sdk-app",
+ "penumbra-sdk-asset",
+ "penumbra-sdk-compact-block",
+ "penumbra-sdk-keys",
+ "penumbra-sdk-num",
+ "penumbra-sdk-proto",
+ "penumbra-sdk-shielded-pool",
+ "penumbra-sdk-stake",
+ "penumbra-sdk-tct",
+ "penumbra-sdk-view",
+ "regex",
+ "reqwest 0.12.9",
+ "rustls 0.23.21",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml 0.7.8",
+ "tonic",
+ "tracing",
+ "tracing-subscriber 0.3.18",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "polling"
 version = "3.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9566,6 +9605,7 @@ checksum = "5de17fd2f7da591098415cff336e12965a28061ddace43b59cb3c430179c9439"
 dependencies = [
  "getrandom",
  "rand",
+ "serde",
 ]
 
 [[package]]
