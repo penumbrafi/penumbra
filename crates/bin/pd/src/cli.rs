@@ -143,6 +143,9 @@ pub enum RootCommand {
         /// across upgrade boundaries.
         #[clap(long, display_order = 1000)]
         ready_to_start: bool,
+        /// Optional migration subcommand. If not specified, runs the default migration.
+        #[clap(subcommand)]
+        migration_type: Option<MigrateCommand>,
     },
 
     /// Coordinated-restart migration for a chain halted by liveness loss: remove the given
@@ -169,6 +172,28 @@ pub enum RootCommand {
         /// DRILL ONLY: replace a kept validator's consensus key, `OLD_B64:NEW_B64`. Repeatable.
         #[clap(long, hide = true)]
         unsafe_test_rekey: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MigrateCommand {
+    /// Prune historical JMT nodes to reclaim storage space.
+    ///
+    /// This is a non-consensus-breaking local optimization that removes
+    /// old versioned nodes while preserving the latest state. The root
+    /// hash remains unchanged.
+    ///
+    /// The unpruned database is kept at `<pd_home>/rocksdb_old` unless
+    /// `--delete-old-db` is passed, so the operator can roll back until the
+    /// pruned node has been verified.
+    Prune {
+        /// Number of key-value pairs per range-proof-verified chunk.
+        #[clap(long, env = "PRUNE_CHUNK_SIZE", default_value_t = 100_000)]
+        chunk_size: usize,
+        /// Delete the unpruned database after a successful swap instead of
+        /// keeping it at `rocksdb_old` for rollback.
+        #[clap(long)]
+        delete_old_db: bool,
     },
 }
 

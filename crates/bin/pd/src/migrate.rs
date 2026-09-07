@@ -8,6 +8,7 @@ mod mainnet1;
 mod mainnet2;
 mod mainnet3;
 mod mainnet4;
+pub mod prune;
 mod reset_halt_bit;
 pub mod restart_fork;
 mod simple;

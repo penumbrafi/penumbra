@@ -11,7 +11,7 @@ use anyhow::{anyhow, Context};
 use cnidarium::Storage;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use pd::{
-    cli::{NetworkCommand, Opt, RootCommand},
+    cli::{MigrateCommand, NetworkCommand, Opt, RootCommand},
     migrate::Migration::{Mainnet4, ReadyToStart},
     network::{
         config::{get_network_dir, parse_tm_address, url_has_necessary_parts},
@@ -107,6 +107,20 @@ async fn main() -> anyhow::Result<()> {
                 None => get_network_dir(None).join("node0").join("pd"),
             };
             let rocksdb_home = pd_home.join("rocksdb");
+
+            // An interrupted `pd migrate prune` leaves `rocksdb_old` without `rocksdb`.
+            // Opening storage here would silently create an empty database and
+            // start syncing from genesis, so refuse instead.
+            let rocksdb_old = pd_home.join("rocksdb_old");
+            anyhow::ensure!(
+                !(rocksdb_old.exists() && !rocksdb_home.exists()),
+                "found {} but no {}: a `pd migrate prune` was interrupted mid-swap. \
+                 Restore the database with `mv {} {}` before starting pd.",
+                rocksdb_old.display(),
+                rocksdb_home.display(),
+                rocksdb_old.display(),
+                rocksdb_home.display(),
+            );
 
             let storage = Storage::load(rocksdb_home, SUBSTORE_PREFIXES.to_vec())
                 .await
@@ -544,6 +558,7 @@ async fn main() -> anyhow::Result<()> {
             comet_home,
             force,
             ready_to_start,
+            migration_type,
         } => {
             let (pd_home, comet_home) = match home {
                 Some(h) => (h, comet_home),
@@ -557,6 +572,26 @@ async fn main() -> anyhow::Result<()> {
             let pd_migrate_span = tracing::error_span!("pd_migrate");
             pd_migrate_span
                 .in_scope(|| tracing::info!("migrating pd state in {}", pd_home.display()));
+
+            if let Some(MigrateCommand::Prune {
+                chunk_size,
+                delete_old_db,
+            }) = migration_type
+            {
+                // Non-consensus-breaking and safe to run any time the node is stopped.
+                // Handled before any halt-bit check so the database is opened once.
+                tracing::info!("performing JMT pruning");
+                let options = pd::migrate::prune::PruneOptions {
+                    chunk_size,
+                    delete_old_db,
+                };
+                let (root_hash, version) = pd::migrate::prune::prune(&pd_home, &options)
+                    .instrument(pd_migrate_span)
+                    .await
+                    .context("failed to perform JMT pruning")?;
+                tracing::info!(?root_hash, version, "JMT pruning complete");
+                exit(0)
+            }
 
             if ready_to_start {
                 tracing::info!("disabling halt order in local state");
