@@ -44,6 +44,15 @@ one-block gap.
 
 ## 0. Get the binary
 
+> **pd 2.0.10 is a superset of 2.0.9.** It is 2.0.9 plus the offline
+> `pd migrate prune` tool; `migrate-restart` and the genesis it produces are
+> byte-identical. If you have not restarted yet, use
+> <https://github.com/penumbrafi/penumbra/releases/tag/v2.0.10> and substitute
+> `2.0.10` for `2.0.9` in the commands below; the genesis sha256 and the
+> post-migration app_hash are unchanged. Pruning is a separate, optional,
+> offline step — see `CHANGELOG.md` — and must not be run within 24 h of the
+> restart on a validator.
+
 Download `pd` **v2.0.9** (Linux x86_64; on arm64 build from source) — it includes `migrate-restart`
 and is what the revived chain runs. Earlier builds (2.0.6 branch builds, v2.0.8)
 restart at 12598601 and **cannot start the chain**; do not use them.
