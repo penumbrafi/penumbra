@@ -1,17 +1,33 @@
 //! Offline pruning of the main-store Jellyfish Merkle Tree.
 //!
 //! Rebuilds the main JMT at its latest version into a fresh database using
-//! cnidarium's range-proof-verified streaming, copies the auxiliary and
-//! substore column families unchanged, then swaps the new database into place.
-//! Local-only and non-consensus-breaking: the root hash is unchanged.
+//! cnidarium's range-proof-verified streaming, copies every other column family
+//! unchanged, verifies the copy, then swaps the new database into place.
+//! Local-only and non-consensus-breaking: the root hash is unchanged, and so is
+//! every value the node reads.
+//!
+//! Two things have to hold for the swapped-in database to be usable, and both
+//! are checked before anything is renamed:
+//!
+//! * the rebuilt JMT hashes to the same root -- covered by the per-chunk range
+//!   proofs inside cnidarium, and re-checked by reopening the pruned database;
+//! * everything the pruner did not rebuild survives byte for byte -- covered by
+//!   fingerprinting every other column family in both databases.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use cnidarium::{prune_main_substore, PruneConfig, Storage};
+use cnidarium::{
+    copy_column_families, prune_main_substore, verify_column_families, PruneConfig, Storage,
+};
 use jmt::RootHash;
 use penumbra_sdk_app::SUBSTORE_PREFIXES;
-use rocksdb::DB;
+use rocksdb::{Options, DB};
+
+/// The only column families the pruner rebuilds. Every other column family in
+/// the database -- including ones added after this was written -- is copied
+/// across verbatim and then verified.
+const REBUILT_COLUMN_FAMILIES: [&str; 2] = ["substore--jmt", "substore--jmt-values"];
 
 /// Operator-facing options for pruning.
 #[derive(Debug, Clone)]
@@ -69,35 +85,6 @@ fn check_directory_layout(
     Ok(())
 }
 
-/// Copy all entries from one column family to another, preserving key/value bytes exactly.
-fn copy_column_family(old_db: &DB, new_db: &DB, cf_name: &str) -> Result<u64> {
-    let old_cf = old_db
-        .cf_handle(cf_name)
-        .ok_or_else(|| anyhow::anyhow!("column family '{}' not found in old database", cf_name))?;
-    let new_cf = new_db
-        .cf_handle(cf_name)
-        .ok_or_else(|| anyhow::anyhow!("column family '{}' not found in new database", cf_name))?;
-
-    let mut count = 0u64;
-    let mut batch = rocksdb::WriteBatch::default();
-    let mut iter = old_db.raw_iterator_cf(old_cf);
-    iter.seek_to_first();
-    while iter.valid() {
-        if let (Some(key), Some(value)) = (iter.key(), iter.value()) {
-            batch.put_cf(new_cf, key, value);
-            count += 1;
-            if count % 10_000 == 0 {
-                new_db.write(std::mem::take(&mut batch))?;
-            }
-        }
-        iter.next();
-    }
-    if !batch.is_empty() {
-        new_db.write(batch)?;
-    }
-    Ok(count)
-}
-
 /// Prune the pd database under `pd_home`. Returns the (unchanged) root hash and version.
 pub async fn prune(pd_home: &PathBuf, options: &PruneOptions) -> Result<(RootHash, u64)> {
     let rocksdb_dir = pd_home.join("rocksdb");
@@ -112,6 +99,15 @@ pub async fn prune(pd_home: &PathBuf, options: &PruneOptions) -> Result<(RootHas
         initial_size_bytes = initial_size,
         "rocksdb directory size before pruning"
     );
+
+    // Take the column family list from the database itself, so a column family
+    // this code does not know about cannot be silently dropped.
+    let cf_names = DB::list_cf(
+        &Options::default(),
+        rocksdb_dir.to_str().context("rocksdb path is not utf-8")?,
+    )
+    .context("listing column families")?;
+    tracing::info!(column_families = ?cf_names, "found column families");
 
     let storage = Storage::load(rocksdb_dir.clone(), SUBSTORE_PREFIXES.to_vec()).await?;
     let snapshot = storage.latest_snapshot();
@@ -145,36 +141,64 @@ pub async fn prune(pd_home: &PathBuf, options: &PruneOptions) -> Result<(RootHas
         "main store pruned (root hash verified via range proofs)"
     );
 
-    tracing::info!("copying auxiliary column families from old database");
-    for cf_name in [
-        "config",
-        "substore--jmt-keys",
-        "substore--jmt-keys-by-keyhash",
-        "substore--nonverifiable",
-    ] {
-        let count = copy_column_family(&db, &new_db, cf_name)?;
-        tracing::info!(cf_name, count, "copied column family");
-    }
-
-    tracing::info!("copying substore column families");
-    for prefix in SUBSTORE_PREFIXES.iter() {
-        for cf_name in [
-            format!("substore-{}-jmt", prefix),
-            format!("substore-{}-jmt-keys", prefix),
-            format!("substore-{}-jmt-values", prefix),
-            format!("substore-{}-jmt-keys-by-keyhash", prefix),
-            format!("substore-{}-nonverifiable", prefix),
-        ] {
-            let count = copy_column_family(&db, &new_db, &cf_name)?;
-            tracing::info!(cf_name, count, "copied column family");
+    if !report.value_overrides.is_empty() {
+        // The source database's JMT commits to a different value than its value
+        // column family returns for these keys. The pruned database reproduces
+        // both, so the node keeps its app hash *and* reads what the rest of the
+        // network reads, but the operator should know the store carries them.
+        tracing::warn!(
+            count = report.value_overrides.len(),
+            "the source database's merkle tree and value column family disagree on some keys; \
+             the pruned database preserves the source's read values"
+        );
+        for (key_hash, value) in report.value_overrides.iter() {
+            tracing::warn!(
+                key_hash = %hex::encode(key_hash.0),
+                read_value = ?value.as_ref().map(hex::encode),
+                "preserved read-path value"
+            );
         }
     }
+
+    tracing::info!("copying every column family the pruner did not rebuild");
+    let rebuilt: Vec<String> = REBUILT_COLUMN_FAMILIES.iter().map(|s| s.to_string()).collect();
+    let copied = copy_column_families(&db, &new_db, &cf_names, &rebuilt)?;
+    tracing::info!(
+        column_families = copied.len(),
+        entries = copied.iter().map(|(_, n)| n).sum::<u64>(),
+        "copied column families"
+    );
+
+    // Nothing above this point verifies the copy: the range proofs only cover
+    // the rebuilt JMT. Compare every copied column family in both databases and
+    // refuse to swap on any difference -- `rocksdb_old` is the operator's only
+    // copy of the unpruned state.
+    tracing::info!("verifying copied column families");
+    verify_column_families(&db, &new_db, &cf_names, &rebuilt)
+        .context("pruned database failed column family verification; nothing was swapped")?;
 
     drop(new_db);
     drop(db);
     new_storage.release().await;
     storage.release().await;
     tracing::info!("closed both databases");
+
+    // Reopen the pruned database on its own and confirm it comes up at the same
+    // version and root hash the source reported.
+    {
+        let check = Storage::load(rocksdb_new.clone(), SUBSTORE_PREFIXES.to_vec()).await?;
+        let snapshot = check.latest_snapshot();
+        let new_version = snapshot.version();
+        let new_root = snapshot.root_hash().await?;
+        drop(snapshot);
+        check.release().await;
+        anyhow::ensure!(
+            new_version == version && new_root == original_root_hash,
+            "pruned database reopened at version {new_version} root {new_root:?}, \
+             expected version {version} root {original_root_hash:?}; nothing was swapped",
+        );
+        tracing::info!(?new_root, new_version, "pruned database verified on reopen");
+    }
 
     // Two renames cannot be made atomic together; if we die between them,
     // `check_directory_layout` and pd's own startup detect the layout and
