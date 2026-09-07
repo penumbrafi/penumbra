@@ -63,11 +63,16 @@ jobs:
           sudo apt-get install -y build-essential pkg-config libssl-dev clang
 
       # Honors rust-toolchain.toml and caches the build.
+      # rustflags: '' is required. The action defaults RUSTFLAGS to
+      # `-D warnings`, which turns a pre-existing dead-code warning in
+      # penumbra-sdk-ibc into a hard error for every binary except pd. A
+      # release build must not fail on lints.
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: true
           cache-key: ${{ matrix.target }}
+          rustflags: ''
 
       - name: Build all binaries (release, locked)
         id: build
