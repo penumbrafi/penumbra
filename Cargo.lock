@@ -1354,7 +1354,7 @@ dependencies = [
 [[package]]
 name = "cnidarium"
 version = "0.83.1"
-source = "git+https://github.com/penumbrafi/cnidarium?rev=448f5e47bcd307755e288f56a7d979c5ab6624c5#448f5e47bcd307755e288f56a7d979c5ab6624c5"
+source = "git+https://github.com/penumbrafi/cnidarium?rev=416063f0a096422d3837eec8e5001022a0e16d06#416063f0a096422d3837eec8e5001022a0e16d06"
 dependencies = [
  "anyhow",
  "async-trait",
