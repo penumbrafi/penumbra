@@ -1,0 +1,26 @@
+# Dependency-integrated build target. Switch to this (replace lakefile.toml) after
+# `lake exe cache get` once you're ready to cite the Groth16 proof and use Mathlib.
+# NOTE: formal-snarks-project transitively pulls smt (ufmg-smite) + CompPoly; mathlib
+# must be pinned to the SAME v4.33.0 rev formal-snarks uses, and required LAST.
+name = "Penumbra"
+defaultTargets = ["Penumbra", "MetaCheck", "CensusCheck"]
+[leanOptions]
+autoImplicit = false
+"weak.pp.unicode.fun" = true   # weak. so a no-Mathlib build doesn't choke on the unregistered option
+
+[[require]]
+name = "FormalSnarksProject"
+git  = "https://github.com/BoltonBailey/formal-snarks-project"
+# rev = "<v4.33.0 HEAD>"  # pin to the commit read this session (pushed 2026-08-15)
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.33.0"   # matches formal-snarks (manifest rev db584cd6d46c)
+
+[[lean_lib]]
+name = "Penumbra"
+[[lean_lib]]
+name = "MetaCheck"
+[[lean_lib]]
+name = "CensusCheck"
