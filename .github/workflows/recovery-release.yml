@@ -102,10 +102,19 @@ jobs:
           WANT="$(sed -n 's/^version *= *"\(.*\)"$/\1/p' Cargo.toml | head -n1)"
           echo "workspace version: $WANT"
           for b in ${{ steps.build.outputs.built }}; do
-            GOT="$("target/release/$b" --version | awk '{print $2}')"
-            echo "  $b: $GOT"
-            [ "$WANT" = "$GOT" ] || { echo "$b version does not match Cargo.toml"; exit 1; }
+            # Not every binary implements --version (elcuity requires args and
+            # rejects it). Check the ones that do; never fail a release on a
+            # binary that simply has no version flag.
+            GOT="$("target/release/$b" --version 2>/dev/null | awk '{print $2}')" || true
+            case "$GOT" in
+              [0-9]*) echo "  $b: $GOT"
+                      [ "$WANT" = "$GOT" ] || { echo "$b version does not match Cargo.toml"; exit 1; } ;;
+              *)      echo "  $b: no --version, skipped" ;;
+            esac
           done
+          # pd must always report the version.
+          [ "$(target/release/pd --version | awk '{print $2}')" = "$WANT" ] \
+            || { echo "pd version does not match Cargo.toml"; exit 1; }
           # If this is a vX.Y.Z tag, it must name the same version.
           REF="${{ github.event.inputs.tag || github.ref_name }}"
           case "$REF" in
