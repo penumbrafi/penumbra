@@ -8,5 +8,8 @@ import Penumbra.Circuits.ValueCommit.Basic
 import Penumbra.Circuits.Spend.Basic
 import Penumbra.Circuits.Output.Basic
 import Penumbra.Circuits.Swap.Basic
+import Penumbra.Circuits.SwapClaim.Basic
+import Penumbra.Circuits.DelegatorVote.Basic
+import Penumbra.Circuits.NullifierDerivation.Basic
 import Penumbra.Security.Ledger.Balance
 import Penumbra.Security.Ledger.Capstone
