@@ -471,6 +471,74 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("export complete: {}", export_directory.display());
             }
         }
+        RootCommand::MigrateRestart {
+            home,
+            comet_home,
+            remove,
+            disable,
+            unsafe_test_chain_id,
+            unsafe_test_rekey,
+        } => {
+            let (pd_home, comet_home) = match home {
+                Some(h) => (h, comet_home),
+                None => {
+                    let base = get_network_dir(None).join("node0");
+                    (base.join("pd"), Some(base.join("cometbft")))
+                }
+            };
+            let remove = remove
+                .iter()
+                .map(|s| {
+                    let bytes = hex::decode(s.trim())
+                        .with_context(|| format!("invalid hex cometbft address: {s}"))?;
+                    let arr: [u8; 20] = bytes
+                        .try_into()
+                        .map_err(|_| anyhow!("cometbft address must be 20 bytes: {s}"))?;
+                    Ok(arr)
+                })
+                .collect::<anyhow::Result<Vec<[u8; 20]>>>()?;
+            let new_state = if disable {
+                penumbra_sdk_stake::validator::State::Disabled
+            } else {
+                penumbra_sdk_stake::validator::State::Jailed
+            };
+            tracing::info!(
+                ?pd_home,
+                ?comet_home,
+                n_remove = remove.len(),
+                ?new_state,
+                "running restart-fork migration"
+            );
+            let parse_key = |b64: &str| -> anyhow::Result<tendermint::PublicKey> {
+                serde_json::from_value(serde_json::json!({
+                    "type": "tendermint/PubKeyEd25519",
+                    "value": b64,
+                }))
+                .with_context(|| format!("invalid ed25519 consensus key {b64:?}"))
+            };
+            let rekey = unsafe_test_rekey
+                .iter()
+                .map(|pair| {
+                    let (old, new) = pair
+                        .split_once(':')
+                        .with_context(|| format!("expected OLD_B64:NEW_B64, got {pair:?}"))?;
+                    Ok((parse_key(old)?, parse_key(new)?))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let unsafe_test = pd::migrate::restart_fork::UnsafeTestOptions {
+                chain_id: unsafe_test_chain_id,
+                rekey,
+            };
+            if unsafe_test.chain_id.is_some() || !unsafe_test.rekey.is_empty() {
+                tracing::warn!(
+                    ?unsafe_test,
+                    "DRILL MODE: the result is NOT the mainnet restart state"
+                );
+            }
+            pd::migrate::restart_fork::run(pd_home, comet_home, remove, new_state, unsafe_test)
+                .await
+                .context("restart-fork migration failed")?;
+        }
         RootCommand::Migrate {
             home,
             comet_home,

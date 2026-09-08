@@ -144,6 +144,32 @@ pub enum RootCommand {
         #[clap(long, display_order = 1000)]
         ready_to_start: bool,
     },
+
+    /// Coordinated-restart migration for a chain halted by liveness loss: remove the given
+    /// validators from the active set (Jailed, or Disabled with --disable) and write a
+    /// checkpoint genesis. Does not require the halt bit. EXPERT MODE: all participants must
+    /// run the identical binary with the identical --remove list.
+    MigrateRestart {
+        /// The home directory of the full node (contains `rocksdb`).
+        #[clap(long, env = "PENUMBRA_PD_HOME", display_order = 100)]
+        home: Option<PathBuf>,
+        /// If set, also write the genesis into this CometBFT home and bump its
+        /// priv_validator_state height.
+        #[clap(long, display_order = 200)]
+        comet_home: Option<PathBuf>,
+        /// CometBFT consensus address (40 hex chars) of a validator to remove. Repeatable.
+        #[clap(long = "remove", required = true, display_order = 300)]
+        remove: Vec<String>,
+        /// Mark removed validators Disabled (no downtime penalty) instead of Jailed.
+        #[clap(long, display_order = 400)]
+        disable: bool,
+        /// DRILL ONLY: override the chain id so the drill can never talk to mainnet.
+        #[clap(long, hide = true)]
+        unsafe_test_chain_id: Option<String>,
+        /// DRILL ONLY: replace a kept validator's consensus key, `OLD_B64:NEW_B64`. Repeatable.
+        #[clap(long, hide = true)]
+        unsafe_test_rekey: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
