@@ -19,6 +19,13 @@ kept validator can rejoin.
 migrated one. Running the old and new node on the same key = double-sign =
 permanent tombstone.
 
+> **Joining after 2026-09-07 (chain already producing blocks):** do not run
+> `migrate-restart` with pd 2.0.11 or later. Its storage fix computes a different
+> checkpoint than the one the network agreed on. Either restore the published
+> post-migration snapshot (state at 12598602, genesis included, no migrate step:
+> https://snapshot.rotko.net/penumbra-1/12598602/) and run any 2.0.9+ binary, or
+> migrate with **exactly pd 2.0.9** and verify the genesis sha below.
+
 **Verify, don't trust:** your own `pd migrate-restart` must reproduce the exact
 genesis sha256 above. That hash — not any prebuilt binary — is the cross-check.
 
