@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.0.11
+
+pd 2.0.11 is pd 2.0.10 with a fixed `pd migrate prune`. Same consensus code,
+`APP_VERSION` still 11, same restart genesis: a drop-in for a running 2.0.9 or
+2.0.10 node, with no migration, no upgrade height and no coordination.
+`git diff v2.0.10..v2.0.11 -- crates/core` is empty. Do not re-run
+`migrate-restart` from pre-restart state to join the chain — the `commit_in_place`
+fix below changes what it produces; join from a post-restart snapshot.
+
+**2.0.10's `pd migrate prune` must not be run on post-restart state.** It
+produced a database with the correct root hash that `pd start` could not use.
+
+### What changed
+
+* Pruning detects any key where the merkle leaf and the value store disagree —
+  the restart migration left three of them on `penumbra-1` — and preserves the
+  value a node reads, leaving the tree and the root hash untouched. Every such
+  key is logged.
+* Every column family the pruner does not rebuild is fingerprinted in both
+  databases, and the pruned store reopened at the same version and root hash,
+  before any directory is renamed. A mismatch aborts, swapping nothing.
+* `cnidarium` 0.83.2 (tag `v0.83.2`) carries the other half: `commit_in_place`
+  now refreshes the snapshot cache, which is what left the divergence behind.
+
+### Pruning
+
+Stop **both** cometbft and pd, then run as the `pd` user with a raised limit:
+`sudo -u penumbra bash -c 'ulimit -n 1048576 && pd migrate --home <pd_home> prune'`.
+Budget 1–4 hours and ~5 GB RAM for a full store; start pd first, then cometbft.
+`<pd_home>/rocksdb_old` keeps the unpruned copy — delete it after a day of
+following the chain. One validator at a time; archive, RPC, indexer and
+snapshot-provider nodes do not prune, and never with an older version.
+Full procedure: [`docs/pruning.md`](https://github.com/penumbrafi/penumbra/blob/v2.0.11/docs/pruning.md).
+
+### Assets
+
+`pd`, `pcli`, `pclientd`, `pindexer`, `pmonitor` and `elcuity` for linux x86_64
+and aarch64; reproduce with `cargo build --release --locked`.
+
+Maintained by the Penumbra community — <https://github.com/penumbrafi/penumbra>.
+
 ## 2.0.10
 
 pd 2.0.10 is pd 2.0.9 plus one new command, `pd migrate prune`. Same consensus

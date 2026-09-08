@@ -1,6 +1,6 @@
 # Storage pruning and network bootstrap policy
 
-Maintained by the Penumbra community. Last revised 2026-09-07.
+Maintained by the Penumbra community. Last revised 2026-09-09.
 
 ## Where the disk goes
 
@@ -80,8 +80,12 @@ that can always bootstrap itself. Revisit rule 2 once state sync ships.
 
 ## Running it
 
-Ships in **pd 2.0.10** (= pd 2.0.9 + this tool). Drop-in, not
+Ships in **pd 2.0.11** (= pd 2.0.9 + this tool). Drop-in, not
 consensus-breaking, `APP_VERSION` unchanged at 11.
+
+**Use 2.0.11, not 2.0.10.** On a store taken after the 12598601 restart, the
+2.0.10 pruner produced a database with the correct root hash that `pd start`
+could not use; see "When the tree and the value store disagree" below.
 
 It is not an upgrade migration: the network is never halted for it, there is no
 prune height, and nodes may prune at different versions. Each node rebuilds its
@@ -91,7 +95,7 @@ The only cost is that *your* node is offline while it runs.
 
 ### Procedure
 
-1. Install the 2.0.10 binary. No migration is needed to adopt it.
+1. Install the 2.0.11 binary. No migration is needed to adopt it.
 2. Make sure there is free disk for the pruned copy, about 10% of the current
    store (35 GB for mainnet). The unpruned database is kept until you delete
    it, so both exist for a while.
@@ -126,11 +130,35 @@ must not run at all. An unprivileged user cannot exceed the hard limit, so on
 `Operation not permitted` use `ulimit -n $(ulimit -Hn)` or raise `LimitNOFILE`
 in the unit file. Anything above about 16384 is enough.
 
+### When the tree and the value store disagree
+
+`pd migrate-restart` in 2.0.9 committed the migration in place and then built
+the synthetic block from a snapshot taken before that write, so three keys on
+`penumbra-1` came out of the 12598601 restart with a merkle leaf committing to
+the pre-migration value while the value column family holds the migrated one.
+Nodes read the value column family; the app hash follows the tree.
+
+The 2.0.10 pruner replayed the tree, which silently replaced those read values
+— on mainnet it turned a Disabled validator Active again and crashed `pd` on
+the first block after the swap. From 2.0.11 the pruner records every key where
+the two paths disagree and rewrites the value row with what the read path
+returned, leaving the tree and hence the root hash untouched. Each one is
+logged as `preserved read-path value`, with a summary warning naming the count;
+seeing them on a post-restart store is expected, not a fault.
+
+cnidarium 0.83.2 fixes the cause: `commit_in_place` now refreshes the snapshot
+cache, so a future in-place migration cannot leave the same divergence behind.
+
 ### Verifying the result
 
 The log ends with `JMT pruning complete root_hash=...`. That hash must equal
 the one printed at the start in `starting JMT pruning`. If it does not, do not
 start the node: restore `rocksdb_old` and report it.
+
+Before the directory swap, 2.0.11 also fingerprints (entry count and a rolling
+SHA-256) every column family it did not rebuild in both databases and reopens
+the pruned store to confirm it comes up at the same version and root hash. Any
+mismatch aborts the run with both directories untouched.
 
 ### Cost and timing
 
@@ -150,7 +178,8 @@ Check `pcli query validator uptime` for your identity first anyway.
   offline at once.
 * Not within 24 hours of the 12598602 restart unless the node is not a
   validator.
-* RPC, archive and indexer nodes do not prune (rule 3 above).
+* RPC, archive, indexer and snapshot-provider nodes do not prune (rule 3
+  above). Never prune with a version older than 2.0.11.
 * `rocksdb_old` is kept; delete it only after the node has followed the chain
   for a day.
 
