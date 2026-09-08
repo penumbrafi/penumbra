@@ -36,6 +36,13 @@ implementation bug *below the trust boundary* can only ever produce **detectable
 counterfeiting — history can be replayed through corrected software. The formal
 target is therefore the *undetectable* case, which is the one suited to proof.
 
+> **This argument does not extend across the IBC boundary** — see
+> *Out of scope: the IBC boundary* below. An over-mint from a cross-chain transfer
+> is detectable on Penumbra, but the asset may already have been bridged out to
+> another chain where history cannot be replayed. That layer is Rust state-machine
+> verification (Kani + Quint), not zk-circuit soundness, and is out of scope for
+> this development.
+
 ---
 
 ## Architecture (bottom → top)
@@ -53,6 +60,44 @@ Mirrors `zcash/ironwood`'s `Zcash/` tree and `tachyon-zcash/ragu`'s `qa/fv/Ragu/
 The **fingerprint boundary** (layer 1) is the single most important idea we take
 from Tal Derei's work: prove soundness about a symbolic object, then show the
 deployed code reproduces that object, rather than trying to reason about Rust.
+
+---
+
+## Out of scope: the IBC boundary (Phase 2)
+
+Cross-chain supply integrity depends on a **second property** that lives in Rust
+state-machine code, not in a zk-circuit — so Clean/Groth16 machinery does not
+apply and it is **not** part of this development. Recorded here so the trust base
+is complete.
+
+**Surface.** Penumbra does not run `ibc-rs` handlers — it pulls `ibc-types` /
+`ibc-proto` (types only) and implements a custom ICS-04/ICS-20 state machine.
+ICS-04 lifecycle:
+`crates/core/component/ibc/src/component/msg_handler/{recv_packet,acknowledgement,timeout}.rs`.
+ICS-20 value logic: `crates/core/component/shielded-pool/src/component/transfer.rs`
+— three `mint_note` sites (native unescrow, guarded; voucher mint, no local
+backing by design; `refund_tokens` on timeout/error-ack); escrow bookkeeping in
+`state_key::ics20_value_balance` per `(channel, asset)`; burn via
+`Ics20Withdrawal::balance() = -value` in the tx value-balance check.
+
+**Property (global escrow invariant, not per-action).** Every
+`mint_note(Ics20Transfer)` is matched by a prior `ics20_value_balance` increment
+(native) or a counterparty-proven packet (voucher), and every withdrawal's
+`-value` is mirrored by a `+value` to the escrow counter.
+
+**Recommended tech.** (1) **Kani** on the real code — `recv_transfer_packet_inner`
+/ `refund_tokens` are `async fn`s generic over `S: StateWrite`, reachable with an
+in-memory stub + `kani::block_on`; asserts the counter invariant per transition
+(bounded; flags `saturating_add` vs `checked_*` at the mint sites). (2) **Quint +
+MBT** for the ICS-04 lifecycle (exactly-once recv, at-most-once refund, timeout
+paths — currently untested), Penumbra's mock relayer as the driver. (3) **Aeneas →
+Lean 4** if the arithmetic core is extracted pure, for an unbounded proof in this
+prover. Reuse Informal Systems' TLA+ `ICS20Inv` (supply conservation) as the
+property, extended for `Unordered` channels + timeout relay.
+
+**Trust caveat.** Voucher mints rest on counterparty honesty + light-client
+soundness + ICS-23 proof verification — named assumptions, no local FV. Kani is
+bounded; Quint verifies a model, not the code; the MBT driver ties the two.
 
 ---
 
