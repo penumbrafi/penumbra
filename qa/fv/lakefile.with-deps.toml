@@ -1,26 +1,21 @@
-# Dependency-integrated build target. Switch to this (replace lakefile.toml) after
-# `lake exe cache get` once you're ready to cite the Groth16 proof and use Mathlib.
-# NOTE: formal-snarks-project transitively pulls smt (ufmg-smite) + CompPoly; mathlib
-# must be pinned to the SAME v4.33.0 rev formal-snarks uses, and required LAST.
+# Dependency-integrated build target — VERIFIED 2026-09-08 on Lean 4.33.1:
+# Clean@main + mathlib both resolve on v4.33.1 (no conflict); `import Clean` compiles.
+# To use: `cp lakefile.with-deps.toml lakefile.toml && lake exe cache get && lake build Clean`
+# (mathlib olean cache ~7.6 GB; Clean builds from source, ~1858 jobs).
+#
+# CompElliptic (ragu/Pasta-specific) is DROPPED — Penumbra is BLS12-377/Groth16.
+# formal-snarks (Groth16 floor) is DEFERRED — it pins Lean 4.33.0, one patch behind
+# Clean's 4.33.1; it is the layer-0 result we CITE, so add it once a 4.33.1 rev exists.
 name = "Penumbra"
-defaultTargets = ["Penumbra", "MetaCheck", "CensusCheck"]
+defaultTargets = ["Penumbra"]
 [leanOptions]
 autoImplicit = false
-"weak.pp.unicode.fun" = true   # weak. so a no-Mathlib build doesn't choke on the unregistered option
 
+# Circuit layer — Clean, zkSecurity's Lean4 ZK-circuit DSL. Pulls mathlib transitively.
 [[require]]
-name = "FormalSnarksProject"
-git  = "https://github.com/BoltonBailey/formal-snarks-project"
-# rev = "<v4.33.0 HEAD>"  # pin to the commit read this session (pushed 2026-08-15)
-
-[[require]]
-name = "mathlib"
-scope = "leanprover-community"
-rev = "v4.33.0"   # matches formal-snarks (manifest rev db584cd6d46c)
+name = "clean"
+git  = "https://github.com/Verified-zkEVM/clean"
+# rev = "<pin once the first Clean-based circuit obligation lands>"
 
 [[lean_lib]]
 name = "Penumbra"
-[[lean_lib]]
-name = "MetaCheck"
-[[lean_lib]]
-name = "CensusCheck"

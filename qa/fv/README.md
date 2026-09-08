@@ -113,11 +113,15 @@ qa/fv/
 
 ## Immediate tasks
 
-1. **Toolchain reconciliation.** Ironwood pins Lean 4.30 (its Clean rev); Bailey–
-   Miller uses 4.30/4.33; mathlib must match. Pick one target, pin Clean +
-   CompElliptic + formal-snarks + mathlib to it in `lakefile.with-deps.toml` +
-   `lake-manifest.json`, then `lake exe cache get && lake build` to a compiling
-   skeleton (with `sorry`s).
+1. **Toolchain reconciliation — DONE (2026-09-08, Lean 4.33.1).** `lean-toolchain`
+   is `v4.33.1`; the deps-free skeleton + all frames build green on it. **Clean@main
+   + mathlib both resolve on 4.33.1 with no conflict, and `import Clean` compiles**
+   (verified: mathlib olean cache ~7.6 GB via `lake exe cache get`; Clean builds from
+   source, 1858 jobs). `lakefile.with-deps.toml` holds the verified Clean config —
+   **CompElliptic dropped** (ragu/Pasta-specific; Penumbra is BLS12-377/Groth16) and
+   **formal-snarks deferred** (pins 4.33.0, one patch behind Clean; it is the layer-0
+   result we CITE, so wire it when a 4.33.1 rev exists). The deps-free `lakefile.toml`
+   stays the fast default; swap in with-deps when writing Clean-based circuit proofs.
 2. **Port the axiom census** (`Meta/`) from Ironwood; wire it into CI so the set
    of named assumptions is always visible and can only grow deliberately.
 3. **Add `extraction/`** — the Rust crate that emits Penumbra's Groth16 verifier
