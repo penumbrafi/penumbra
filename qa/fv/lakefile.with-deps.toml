@@ -1,0 +1,21 @@
+# Dependency-integrated build target — VERIFIED 2026-09-08 on Lean 4.33.1:
+# Clean@main + mathlib both resolve on v4.33.1 (no conflict); `import Clean` compiles.
+# To use: `cp lakefile.with-deps.toml lakefile.toml && lake exe cache get && lake build Clean`
+# (mathlib olean cache ~7.6 GB; Clean builds from source, ~1858 jobs).
+#
+# CompElliptic (ragu/Pasta-specific) is DROPPED — Penumbra is BLS12-377/Groth16.
+# formal-snarks (Groth16 floor) is DEFERRED — it pins Lean 4.33.0, one patch behind
+# Clean's 4.33.1; it is the layer-0 result we CITE, so add it once a 4.33.1 rev exists.
+name = "Penumbra"
+defaultTargets = ["Penumbra"]
+[leanOptions]
+autoImplicit = false
+
+# Circuit layer — Clean, zkSecurity's Lean4 ZK-circuit DSL. Pulls mathlib transitively.
+[[require]]
+name = "clean"
+git  = "https://github.com/Verified-zkEVM/clean"
+# rev = "<pin once the first Clean-based circuit obligation lands>"
+
+[[lean_lib]]
+name = "Penumbra"
