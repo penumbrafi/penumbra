@@ -171,6 +171,24 @@ pub enum MigrateCommand {
         #[clap(long, value_name = "VERSION")]
         target_app_version: Option<u64>,
     },
+    /// Prune historical JMT nodes to reclaim storage space.
+    ///
+    /// This is a non-consensus-breaking local optimization that removes
+    /// old versioned nodes while preserving the latest state. The root
+    /// hash remains unchanged.
+    ///
+    /// The unpruned database is kept at `<pd_home>/rocksdb_old` unless
+    /// `--delete-old-db` is passed, so the operator can roll back until the
+    /// pruned node has been verified.
+    Prune {
+        /// Number of key-value pairs per range-proof-verified chunk.
+        #[clap(long, env = "PRUNE_CHUNK_SIZE", default_value_t = 100_000)]
+        chunk_size: usize,
+        /// Delete the unpruned database after a successful swap instead of
+        /// keeping it at `rocksdb_old` for rollback.
+        #[clap(long)]
+        delete_old_db: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
