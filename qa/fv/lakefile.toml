@@ -1,0 +1,6 @@
+name = "Penumbra"
+defaultTargets = ["Penumbra"]
+[leanOptions]
+autoImplicit = false
+[[lean_lib]]
+name = "Penumbra"
