@@ -721,6 +721,23 @@ mod tests {
 
         let mut second_update = MsgUpdateClient::decode(msg_update_second.as_slice()).unwrap();
         second_update.client_id = ClientId::from_str("07-tendermint-0").unwrap();
+
+        // The `LightClient` trait must agree with the handler: verify the
+        // same header through the trait first (read-only), then run the
+        // handler and compare what it stored.
+        use crate::component::light_client::{LightClient as _, TendermintLightClient};
+        let client_id = second_update.client_id.clone();
+        let verified = TendermintLightClient::verify_header::<_, MockHost>(
+            &*state,
+            &client_id,
+            second_update.client_message.clone(),
+        )
+        .await?;
+        assert_eq!(
+            TendermintLightClient::status(&*state, &client_id, timestamp).await?,
+            ClientStatus::Active
+        );
+
         let second_update_client_action = IbcRelayWithHandlers::<MockAppHandler, MockHost>::new(
             IbcRelay::UpdateClient(second_update),
         );
@@ -734,6 +751,22 @@ mod tests {
             .check_and_execute(&mut state_tx)
             .await?;
         state_tx.apply();
+
+        let stored = state
+            .get_verified_consensus_state(&verified.height, &client_id)
+            .await?;
+        let via_trait =
+            ibc_types::lightclients::tendermint::consensus_state::ConsensusState::try_from(
+                verified.consensus_state,
+            )?;
+        assert_eq!(stored, via_trait);
+        let stored_client = state.get_client_state(&client_id).await?;
+        let via_trait_client =
+            ibc_types::lightclients::tendermint::client_state::ClientState::try_from(
+                verified.client_state,
+            )?;
+        assert_eq!(stored_client, via_trait_client);
+        assert_eq!(stored_client.latest_height(), verified.height);
 
         Ok(())
     }

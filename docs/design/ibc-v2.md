@@ -99,7 +99,10 @@ those callers; a second kind reads its own state through the `Any`.
 Adding the Eureka Ethereum client in phase 2 means: a `LightClientKind`
 variant, a `LightClient` impl over the `ethereum-light-client` crate, an arm
 in `CreateClient` for its client id prefix and state validation, and an arm
-in each dispatch `match`. Regression gate for the retrofit:
+in each dispatch `match`. Two pre-dispatch spots in `update_client.rs` are still Tendermint-hardcoded
+and must be generalized with the arms: `check_stateless`'s
+`header_is_tendermint` and the duplicate-update short-circuit
+`update_is_already_committed`. Regression gate for the retrofit:
 `test_create_and_update_light_client` (real header fixtures through the
 real update path) and the classic `ics20_transfer_no_timeouts` app-test.
 
