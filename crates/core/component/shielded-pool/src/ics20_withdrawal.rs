@@ -1,6 +1,4 @@
-use ibc_types::core::{
-    channel::ChannelId, channel::PortId, client::ClientId, client::Height as IbcHeight,
-};
+use ibc_types::core::{channel::ChannelId, client::ClientId, client::Height as IbcHeight};
 use penumbra_sdk_asset::{
     asset::{self, Metadata},
     Balance, Value,
@@ -76,7 +74,7 @@ impl Ics20Withdrawal {
     pub fn v1_packet(&self) -> Option<IBCPacket<Unchecked>> {
         match &self.source {
             Ics20WithdrawalSource::Channel(source_channel) => Some(IBCPacket::new(
-                PortId::transfer(),
+                ibc_types::core::channel::PortId::transfer(),
                 source_channel.clone(),
                 self.timeout_height,
                 self.timeout_time,
@@ -239,5 +237,67 @@ impl From<Ics20Withdrawal> for pb::FungibleTokenPacketData {
             sender: return_address,
             memo: w.ics20_memo,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message as _;
+
+    fn withdrawal(source: Ics20WithdrawalSource) -> Ics20Withdrawal {
+        let address = penumbra_sdk_keys::test_keys::ADDRESS_0.clone();
+        Ics20Withdrawal {
+            amount: 1000u64.into(),
+            denom: "upenumbra".try_into().unwrap(),
+            destination_chain_address: "cosmos1abc".into(),
+            return_address: address,
+            timeout_height: IbcHeight::new(1, 100).unwrap(),
+            timeout_time: 60_000_000_000,
+            source,
+            use_compat_address: false,
+            ics20_memo: String::new(),
+            use_transparent_address: false,
+        }
+    }
+
+    /// The new `source_client` field (11) must not appear on the wire for
+    /// channel withdrawals, so effect hashes of existing transactions are
+    /// unchanged.
+    #[test]
+    fn channel_withdrawal_encoding_has_no_source_client_field() {
+        let w = withdrawal(Ics20WithdrawalSource::Channel(ChannelId::new(0)));
+        let pb: pb::Ics20Withdrawal = w.clone().into();
+        assert_eq!(pb.source_channel, "channel-0");
+        assert!(pb.source_client.is_empty());
+        let bytes = pb.encode_to_vec();
+        // Field 11, wire type 2 => tag byte 0x5a. It is absent when empty.
+        let without = pb::Ics20Withdrawal {
+            source_client: String::new(),
+            ..pb.clone()
+        };
+        assert_eq!(bytes, without.encode_to_vec());
+        let back: Ics20Withdrawal = pb::Ics20Withdrawal::decode(bytes.as_slice())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(back.source, w.source);
+    }
+
+    #[test]
+    fn client_withdrawal_round_trips_and_rejects_both_sources() {
+        let w = withdrawal(Ics20WithdrawalSource::Client("07-tendermint-3".parse().unwrap()));
+        let pb: pb::Ics20Withdrawal = w.clone().into();
+        assert!(pb.source_channel.is_empty());
+        assert_eq!(pb.source_client, "07-tendermint-3");
+        let back: Ics20Withdrawal = pb.clone().try_into().unwrap();
+        assert_eq!(back.source, w.source);
+        assert_eq!(back.timeout_time_seconds(), 60);
+
+        let both = pb::Ics20Withdrawal {
+            source_channel: "channel-0".into(),
+            ..pb
+        };
+        assert!(Ics20Withdrawal::try_from(both).is_err());
     }
 }

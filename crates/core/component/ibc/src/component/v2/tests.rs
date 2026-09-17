@@ -403,12 +403,33 @@ async fn send_recv_ack_round_trip() -> Result<()> {
     let mut state = a.begin();
     let b_height = b.height - 1;
     a.trust(&mut state, b.root().await?, b_height, time(NOW)).await?;
+    // A forged ack does not verify against B's ack commitment.
+    let err = a
+        .relay(
+            &mut state,
+            IbcRelay::AcknowledgementV2(MsgAcknowledgementV2 {
+                packet: packet.clone(),
+                acknowledgement: Acknowledgement {
+                    app_acknowledgements: vec![b"forged".to_vec()],
+                },
+                proof_acked: proof.clone(),
+                proof_height: Height::new(0, b_height)?,
+                signer: String::new(),
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("acknowledgement proof failed"), "{err:#}");
+    assert!(state
+        .get_packet_commitment_v2(a.client.as_str(), 1)
+        .await?
+        .is_some());
     a.relay(
         &mut state,
         IbcRelay::AcknowledgementV2(MsgAcknowledgementV2 {
             packet: packet.clone(),
             acknowledgement: expected_ack.clone(),
-            proof_acked: proof.clone(),
+            proof_acked: proof,
             proof_height: Height::new(0, b_height)?,
             signer: String::new(),
         }),
@@ -422,23 +443,6 @@ async fn send_recv_ack_round_trip() -> Result<()> {
         .get_packet_commitment_v2(a.client.as_str(), 1)
         .await?
         .is_none());
-    // A wrong ack does not verify.
-    let err = a
-        .relay(
-            &mut state,
-            IbcRelay::AcknowledgementV2(MsgAcknowledgementV2 {
-                packet: packet.clone(),
-                acknowledgement: Acknowledgement {
-                    app_acknowledgements: vec![b"forged".to_vec()],
-                },
-                proof_acked: proof,
-                proof_height: Height::new(0, b_height)?,
-                signer: String::new(),
-            }),
-        )
-        .await
-        .unwrap_err();
-    assert!(format!("{err:#}").contains("commitment not found"), "{err:#}");
     Ok(())
 }
 

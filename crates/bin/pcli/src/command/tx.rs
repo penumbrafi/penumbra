@@ -1274,8 +1274,14 @@ impl TxCmd {
 
                 let mut timeout_timestamp = *timeout_timestamp;
                 if timeout_timestamp == 0u64 {
-                    // add 2 days to current time
-                    timeout_timestamp = current_time_ns + 1.728e14 as u64;
+                    timeout_timestamp = if client.is_some() {
+                        // IBC v2 caps timeouts at 24h after the current block
+                        // time (ibc-go MaxTimeoutDelta): default to 12 hours.
+                        current_time_ns + 12 * 60 * 60 * 1_000_000_000
+                    } else {
+                        // add 2 days to current time
+                        current_time_ns + 1.728e14 as u64
+                    };
                 }
 
                 // round to the nearest 10 minutes

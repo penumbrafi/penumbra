@@ -90,12 +90,12 @@ impl MsgHandler for MsgAcknowledgement {
             "no v2 application for port {}",
             payload.source_port
         );
-        AH::acknowledge_payload_v2(
-            &mut state,
-            packet,
-            payload,
-            &self.acknowledgement.app_acknowledgements[0],
-        )
+        let app_ack = self
+            .acknowledgement
+            .app_acknowledgements
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("acknowledgement carries no app acknowledgement"))?;
+        AH::acknowledge_payload_v2(&mut state, packet, payload, app_ack)
         .await
         .context("v2 application failed to process acknowledgement")?;
 
