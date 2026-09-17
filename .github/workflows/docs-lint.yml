@@ -50,20 +50,23 @@ jobs:
       # the `edition2024` cargo feature stabilized in 1.85), so installing them
       # under the workspace toolchain fails outright. Taking current stable here
       # keeps the docs tooling installable without pinning versions that would
-      # need bumping again the next time these crates raise their MSRV. This
-      # action exports RUSTUP_TOOLCHAIN, which overrides rust-toolchain.toml.
+      # need bumping again the next time these crates raise their MSRV.
       - name: install current stable rust for the mdbook tools
         uses: dtolnay/rust-toolchain@stable
 
       - name: Load rust cache
         uses: Swatinem/rust-cache@v2
 
-      # Installing from crates and building from source is fine here, because
-      # the rust-cache restore on the previous step keeps it short. `--locked`
-      # uses each tool's own Cargo.lock, so an unrelated upstream release
-      # cannot break this job.
+      # `+stable` is required and not redundant with the step above. Installing
+      # the toolchain does not make it the active one: rust-toolchain.toml still
+      # wins for any cargo invocation inside the checkout, so a plain
+      # `cargo install` here runs under 1.83 and fails even though 1.98 is
+      # present. `+stable` selects it explicitly.
+      #
+      # `--locked` uses each tool's own Cargo.lock, so an unrelated upstream
+      # release cannot break this job.
       - name: Install mdbook dependencies
-        run: cargo install --locked mdbook mdbook-katex mdbook-mermaid mdbook-linkcheck
+        run: cargo +stable install --locked mdbook mdbook-katex mdbook-mermaid mdbook-linkcheck
 
       - name: Build protocol docs
         run: cd docs/protocol && mdbook build
