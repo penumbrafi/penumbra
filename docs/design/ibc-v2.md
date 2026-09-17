@@ -37,21 +37,24 @@ strings")`, so a single v2 key under `ibc-data` would panic every node that
 prefix-scans that substore. Byte keys must not be written until that
 iterator is byte-safe.
 
-Change (in our cnidarium fork, one PR, before any v2 pd code):
+Change, shipped as penumbrafi/cnidarium#3 (branch `feat/byte-keys`):
 
-- Make the cache and delta key type `Vec<u8>` internally; keep the `String`
-  API as a thin wrapper so no existing caller changes.
-- Add `put_raw_bytes(Vec<u8>, Vec<u8>)`, `delete_bytes(Vec<u8>)`,
-  `get_raw_bytes(&[u8])`, `prefix_raw_bytes(&[u8])` to the traits.
+- `StateWrite::put_raw_bytes(Vec<u8>, Vec<u8>)`, `delete_bytes(Vec<u8>)`,
+  `StateRead::get_raw_bytes(&[u8])`. A key that is valid UTF-8 routes to
+  the existing `String` map, so a key has exactly one home and string and
+  byte reads agree; only non-UTF-8 keys land in a parallel
+  `Cache::unwritten_bytes_changes` map. No existing caller changes.
 - Substore routing for byte keys uses `route_key_bytes`; the `ibc-data/`
-  prefix and `/` delimiter are ASCII so the split is unaffected.
-- `prefix_raw` / `prefix_keys` iteration: drop the UTF-8 `expect`, yield
-  bytes internally, and have the `&str` API skip (not panic on) non-UTF-8
-  preimages; add `prefix_raw_bytes`.
-- Test: write under a key containing `0xff`, commit, `get_with_proof` on the
-  bytes, verify with `[ics23_spec(); 2]`; non-membership for the
-  neighbouring sequence; and a string `prefix_raw` over the same substore
-  that does not panic.
+  prefix and `/` delimiter are ASCII so the split is unaffected. Commit
+  chains both maps into one JMT value set.
+- `prefix_raw` / `prefix_keys` skip non-UTF-8 preimages instead of
+  panicking. There is no `prefix_raw_bytes`: v2 reads commitments by exact
+  key or `get_with_proof`, and byte keys are not surfaced in the rpc watch
+  stream either.
+- Test (`tests/byte_keys.rs`): sequence 200 under `ibc-data`, reads through
+  delta, fork layer and snapshot; string streams unaffected; ICS23
+  membership and non-membership over the raw path bytes under
+  `[ics23_spec(); 2]`; delete then provable absence.
 
 This is a storage-layer change and gates everything below that writes a
 commitment. It is the one item that would be painful to find after phase 1
