@@ -576,8 +576,41 @@ async fn main() -> anyhow::Result<()> {
             if let Some(MigrateCommand::Prune {
                 chunk_size,
                 delete_old_db,
+                dry_run,
+                yes,
             }) = migration_type
             {
+                // Preflight: report source size, estimated duration, RAM peak,
+                // faster alternatives, and whether this looks like a live node.
+                // Runs first even in the normal (non-dry-run) path so the
+                // operator can bail out before we hold pd's rocksdb open for
+                // hours.
+                let preflight = pd::migrate::prune_preflight::Preflight::collect(
+                    &pd_home, chunk_size,
+                )
+                .context("preflight failed")?;
+                preflight.print();
+
+                if dry_run {
+                    // Reported the plan, touched no disk. Exit 0 so scripts
+                    // can `--dry-run` in CI without failing.
+                    exit(0)
+                }
+
+                let long_downtime = preflight
+                    .estimated_rebuild_duration()
+                    .as_secs()
+                    > 3600;
+                let requires_confirm = preflight.live_node_detected || long_downtime;
+                if requires_confirm && !yes {
+                    let ok = pd::migrate::prune_preflight::confirm_prompt()
+                        .context("confirmation prompt failed")?;
+                    if !ok {
+                        eprintln!("Aborted by operator. No changes made.");
+                        exit(1)
+                    }
+                }
+
                 // Non-consensus-breaking and safe to run any time the node is stopped.
                 // Handled before any halt-bit check so the database is opened once.
                 tracing::info!("performing JMT pruning");
