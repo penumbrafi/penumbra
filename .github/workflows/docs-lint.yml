@@ -43,18 +43,25 @@ jobs:
         with:
           lfs: false
 
+      # This job only builds the books; it never compiles workspace code, so it
+      # does not need the rust 1.83 that rust-toolchain.toml pins. It must not
+      # use it, in fact: the current mdbook tools have outgrown that version
+      # (mdbook 0.5 declares rustc 1.88, and mdbook-katex / mdbook-mermaid want
+      # the `edition2024` cargo feature stabilized in 1.85), so installing them
+      # under the workspace toolchain fails outright. Taking current stable here
+      # keeps the docs tooling installable without pinning versions that would
+      # need bumping again the next time these crates raise their MSRV. This
+      # action exports RUSTUP_TOOLCHAIN, which overrides rust-toolchain.toml.
+      - name: install current stable rust for the mdbook tools
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Load rust cache
         uses: Swatinem/rust-cache@v2
 
-      # Don't bother importing nix env, since we only need a few cargo deps.
-      # It's OK to install from crates, building from source, because the
-      # rust-cache restore on the previous step reduces the install step to ~5s.
-      #
-      # `--locked` is required, not cosmetic: without it cargo resolves each
-      # tool's dependencies to their newest versions, which have outgrown the
-      # rust 1.83 this repo pins in rust-toolchain.toml (clap 4.6 wants
-      # `edition2024`, stabilized in 1.85). `--locked` uses each tool's own
-      # Cargo.lock instead, which is the version set it was released against.
+      # Installing from crates and building from source is fine here, because
+      # the rust-cache restore on the previous step keeps it short. `--locked`
+      # uses each tool's own Cargo.lock, so an unrelated upstream release
+      # cannot break this job.
       - name: Install mdbook dependencies
         run: cargo install --locked mdbook mdbook-katex mdbook-mermaid mdbook-linkcheck
 
