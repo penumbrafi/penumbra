@@ -1,5 +1,47 @@
 # Changelog
 
+## 2.0.13
+
+Operator ergonomics for `pd migrate prune`. No consensus change; drop-in for
+a running 2.0.12 node.
+
+- `pd migrate prune` gains a preflight report that runs before any files are
+  written to `rocksdb_new`. Prints source RocksDB size, estimated JMT keys,
+  estimated wall-clock rebuild time (based on empirically-measured per-key
+  and per-chunk costs on penumbra-1 mainnet), peak RAM per chunk buffer,
+  peak disk footprint, expected pruned size, whether the pd RPC socket is
+  currently listening on the same HOME (best-effort live-node detection),
+  and a table of faster alternatives filtered by `/proc/meminfo`
+  MemAvailable so we don't recommend a chunk-size that would OOM.
+- New `--dry-run` flag prints the preflight report and exits 0 without
+  touching disk. Safe on a running node — the source RocksDB is opened
+  read-only.
+- New `--yes` / `-y` flag bypasses the confirmation prompt for
+  automation. Without it, a detected live node OR an estimated downtime
+  greater than 1 h requires an explicit `y` before the prune starts.
+  Motivated by the Rotko `penumbra.rotko.net` incident where an 11 h
+  live-RPC prune had to be aborted because the operator's mental model
+  was a ~1 h prune done previously on a scratch dataset under 2.0.8.
+- New `--unverified` flag turns on `PruneMode::Unverified` from
+  cnidarium. Skips per-chunk range-proof generation and verification;
+  still checks the rebuilt root hash matches the source's original root
+  at the end of each substore. About 3× faster on penumbra-1
+  mainnet-scale JMTs (from ~15 h to ~5 h in `Verified` mode).
+- `--unverified` requires the paired flag
+  `--i-understand-this-drops-per-chunk-verification` to actually take
+  effect, so operators can't trip into unverified mode by mistake.
+  Strongly recommend taking a filesystem snapshot (ZFS, btrfs, LVM)
+  before running with this flag.
+- Internal: `restart_fork.rs` renamed to `mainnet5_community_fork.rs`
+  to fit the `mainnet<N>.rs` convention used for every prior on-chain
+  migration in this directory. `restart-fork:` tracing message prefixes
+  preserved so operator archives from the actual Sep 2026 restart stay
+  grep-able. Public `pd::migrate::mainnet5_community_fork::run` is the
+  new call path — callers that referenced `pd::migrate::restart_fork::`
+  need to update the module path.
+
+Requires `cnidarium` 0.83.3 (added `PruneMode::Unverified`).
+
 ## 2.0.11
 
 pd 2.0.11 is pd 2.0.10 with a fixed `pd migrate prune`. Same consensus code,
