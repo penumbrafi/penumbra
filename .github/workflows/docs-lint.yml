@@ -49,8 +49,14 @@ jobs:
       # Don't bother importing nix env, since we only need a few cargo deps.
       # It's OK to install from crates, building from source, because the
       # rust-cache restore on the previous step reduces the install step to ~5s.
+      #
+      # `--locked` is required, not cosmetic: without it cargo resolves each
+      # tool's dependencies to their newest versions, which have outgrown the
+      # rust 1.83 this repo pins in rust-toolchain.toml (clap 4.6 wants
+      # `edition2024`, stabilized in 1.85). `--locked` uses each tool's own
+      # Cargo.lock instead, which is the version set it was released against.
       - name: Install mdbook dependencies
-        run: cargo install mdbook mdbook-katex mdbook-mermaid mdbook-linkcheck
+        run: cargo install --locked mdbook mdbook-katex mdbook-mermaid mdbook-linkcheck
 
       - name: Build protocol docs
         run: cd docs/protocol && mdbook build
