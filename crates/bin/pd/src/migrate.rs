@@ -9,6 +9,7 @@ mod mainnet2;
 mod mainnet3;
 mod mainnet4;
 pub mod prune;
+pub mod prune_preflight;
 mod reset_halt_bit;
 pub mod mainnet5_community_fork;
 mod simple;

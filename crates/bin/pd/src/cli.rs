@@ -194,6 +194,17 @@ pub enum MigrateCommand {
         /// keeping it at `rocksdb_old` for rollback.
         #[clap(long)]
         delete_old_db: bool,
+        /// Print the preflight report (source size, estimated duration, RAM
+        /// peak, faster alternatives, live-node detection) and exit without
+        /// touching disk. Safe on a running node.
+        #[clap(long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt that fires when a long prune is
+        /// about to be run on what looks like a live node. Intended for
+        /// automation; interactive operators should read the report and
+        /// answer the prompt themselves.
+        #[clap(long, short = 'y')]
+        yes: bool,
     },
 }
 
