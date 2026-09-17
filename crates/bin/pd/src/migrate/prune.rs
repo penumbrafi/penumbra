@@ -161,7 +161,10 @@ pub async fn prune(pd_home: &PathBuf, options: &PruneOptions) -> Result<(RootHas
     }
 
     tracing::info!("copying every column family the pruner did not rebuild");
-    let rebuilt: Vec<String> = REBUILT_COLUMN_FAMILIES.iter().map(|s| s.to_string()).collect();
+    let rebuilt: Vec<String> = REBUILT_COLUMN_FAMILIES
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let copied = copy_column_families(&db, &new_db, &cf_names, &rebuilt)?;
     tracing::info!(
         column_families = copied.len(),

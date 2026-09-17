@@ -18,12 +18,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe"
 
 [[package]]
-name = "adler32"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aae1277d39aeec15cb388266ecc24b11c80469deae6067e17a1a7aa9e5c1f234"
-
-[[package]]
 name = "aead"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -695,30 +689,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-extra"
-version = "0.9.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c794b30c904f0a1c2fb7740f7df7f7972dfaa14ef6f57cb6178dc63e5dca2f04"
-dependencies = [
- "axum",
- "axum-core",
- "bytes",
- "fastrand",
- "futures-util",
- "headers",
- "http 1.2.0",
- "http-body 1.0.1",
- "http-body-util",
- "mime",
- "multer",
- "pin-project-lite",
- "serde",
- "tower 0.5.2",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
 name = "axum-server"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1387,7 +1357,7 @@ dependencies = [
 
 [[package]]
 name = "cnidarium-component"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1465,7 +1435,7 @@ dependencies = [
 
 [[package]]
 name = "cometindex"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1937,7 +1907,7 @@ dependencies = [
 
 [[package]]
 name = "decaf377-fmd"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "ark-ff",
  "ark-serialize",
@@ -1952,7 +1922,7 @@ dependencies = [
 
 [[package]]
 name = "decaf377-frost"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -1967,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "decaf377-ka"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "ark-ff",
  "decaf377",
@@ -2217,7 +2187,7 @@ dependencies = [
 
 [[package]]
 name = "elcuity"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2943,30 +2913,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "headers"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "322106e6bd0cba2d5ead589ddb8150a13d7c4217cf80d7c4f682ca994ccc6aa9"
-dependencies = [
- "base64 0.21.7",
- "bytes",
- "headers-core",
- "http 1.2.0",
- "httpdate",
- "mime",
- "sha1",
-]
-
-[[package]]
-name = "headers-core"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
-dependencies = [
- "http 1.2.0",
-]
-
-[[package]]
 name = "heapless"
 version = "0.7.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3669,40 +3615,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "include-flate"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfdcb449c721557c1cf89bbd3412bf33fa963289e26e9badbd824a960912e148"
-dependencies = [
- "include-flate-codegen-exports",
- "lazy_static",
- "libflate",
-]
-
-[[package]]
-name = "include-flate-codegen"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a7d6e1419fa3129eb0802b4c99603c0d425c79fb5d76191d5a20d0ab0d664e8"
-dependencies = [
- "libflate",
- "proc-macro-hack",
- "proc-macro2 1.0.93",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "include-flate-codegen-exports"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75657043ffe3d8280f1cb8aef0f505532b392ed7758e0baeac22edadcee31a03"
-dependencies = [
- "include-flate-codegen",
- "proc-macro-hack",
-]
-
-[[package]]
 name = "indenter"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3959,26 +3871,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06085512b750d640299b79be4bad3d2fa90a9c00b1fd9e1b46364f66f0485c72"
 dependencies = [
  "pkg-config",
-]
-
-[[package]]
-name = "libflate"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ff4ae71b685bbad2f2f391fe74f6b7659a34871c08b210fdc039e43bee07d18"
-dependencies = [
- "adler32",
- "crc32fast",
- "libflate_lz77",
-]
-
-[[package]]
-name = "libflate_lz77"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a52d3a8bfc85f250440e4424db7d857e241a3aebbbe301f3eb606ab15c39acbf"
-dependencies = [
- "rle-decode-fast",
 ]
 
 [[package]]
@@ -4339,23 +4231,6 @@ name = "mirai-annotations"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9be0862c1b3f26a88803c4a49de6889c10e608b3ee9344e6ef5b45fb37ad3d1"
-
-[[package]]
-name = "multer"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
-dependencies = [
- "bytes",
- "encoding_rs",
- "futures-util",
- "http 1.2.0",
- "httparse",
- "memchr",
- "mime",
- "spin",
- "version_check",
-]
 
 [[package]]
 name = "multimap"
@@ -4797,7 +4672,7 @@ dependencies = [
 
 [[package]]
 name = "pcli"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -4882,7 +4757,7 @@ dependencies = [
 
 [[package]]
 name = "pclientd"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4937,7 +4812,7 @@ dependencies = [
 
 [[package]]
 name = "pd"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5093,7 +4968,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-app"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5174,7 +5049,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-app-tests"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5264,7 +5139,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-asset"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5305,7 +5180,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-auction"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5360,7 +5235,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-auto-https"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "axum-server",
@@ -5372,7 +5247,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-bench"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-bls12-377",
@@ -5416,7 +5291,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-community-pool"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5450,7 +5325,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-compact-block"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5485,7 +5360,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-custody"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "argon2",
@@ -5521,7 +5396,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-custody-ledger-usb"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ledger-lib",
@@ -5538,7 +5413,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-dex"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5601,7 +5476,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-distributions"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5620,7 +5495,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-eddy"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5638,7 +5513,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-fee"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5665,7 +5540,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-funding"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-groth16",
@@ -5701,7 +5576,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-governance"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5755,7 +5630,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-ibc"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5792,7 +5667,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-keys"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "aes",
  "anyhow",
@@ -5839,7 +5714,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-measure"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -5861,7 +5736,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-mock-client"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "cnidarium",
@@ -5878,7 +5753,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-mock-consensus"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5898,7 +5773,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-mock-tendermint-proxy"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "hex",
  "pbjson-types",
@@ -5913,7 +5788,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-num"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -5950,7 +5825,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-parameter-setup"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "ark-groth16",
  "ark-serialize",
@@ -5967,7 +5842,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-proof-params"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ec",
@@ -5995,7 +5870,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-proof-setup"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ec",
@@ -6022,7 +5897,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-proto"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6057,7 +5932,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-sct"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -6094,7 +5969,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-shielded-pool"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -6148,7 +6023,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-stake"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -6201,7 +6076,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-tct"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "ark-ed-on-bls12-377",
  "ark-ff",
@@ -6233,7 +6108,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-tct-property-test"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "futures",
@@ -6244,39 +6119,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "penumbra-sdk-tct-visualize"
-version = "2.0.11"
-dependencies = [
- "anyhow",
- "axum",
- "axum-extra",
- "axum-server",
- "bytes",
- "clap",
- "decaf377",
- "futures",
- "hex",
- "include-flate",
- "parking_lot",
- "penumbra-sdk-tct",
- "prost 0.13.4",
- "rand",
- "rand_chacha",
- "rand_distr",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "tokio",
- "tokio-stream",
- "tokio-util 0.7.11",
- "tonic",
- "tower-http 0.6.2",
- "tracing-subscriber 0.3.18",
-]
-
-[[package]]
 name = "penumbra-sdk-tendermint-proxy"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6308,7 +6152,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-test-subscriber"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "tracing",
  "tracing-subscriber 0.3.18",
@@ -6316,7 +6160,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-tower-trace"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "futures",
  "hex",
@@ -6337,7 +6181,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-transaction"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-ff",
@@ -6393,7 +6237,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-txhash"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "blake2b_simd 1.0.2",
@@ -6406,7 +6250,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-view"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-std",
@@ -6465,7 +6309,7 @@ dependencies = [
 
 [[package]]
 name = "penumbra-sdk-wallet"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-std",
@@ -6519,7 +6363,7 @@ dependencies = [
 
 [[package]]
 name = "picturesque"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "clap",
@@ -6564,7 +6408,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pindexer"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -6672,7 +6516,7 @@ dependencies = [
 
 [[package]]
 name = "pmonitor"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -7200,16 +7044,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rand_distr"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32cb0b9bc82b0a0876c2dd994a7e7a2683d3e7390ca40e6886785ef0c7e3ee31"
-dependencies = [
- "num-traits",
- "rand",
-]
-
-[[package]]
 name = "rand_xorshift"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7480,12 +7314,6 @@ checksum = "bd124222d17ad93a644ed9d011a40f4fb64aa54275c08cc216524a9ea82fb09f"
 dependencies = [
  "digest 0.10.7",
 ]
-
-[[package]]
-name = "rle-decode-fast"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3582f63211428f83597b51b2ddb88e2a91a9d52d12831f9d08f5e624e8977422"
 
 [[package]]
 name = "rlimit"
@@ -7971,7 +7799,6 @@ version = "1.0.138"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d434192e7da787e94a6ea7e9670b26a036d0ca41e0b7efb2676dd32bae872949"
 dependencies = [
- "indexmap 2.7.1",
  "itoa",
  "memchr",
  "ryu",
@@ -8568,7 +8395,7 @@ checksum = "734676eb262c623cec13c3155096e08d1f8f29adce39ba17948b18dad1e54142"
 
 [[package]]
 name = "summonerd"
-version = "2.0.11"
+version = "2.0.12"
 dependencies = [
  "anyhow",
  "ark-groth16",
@@ -9132,10 +8959,7 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
- "futures-util",
- "hashbrown 0.14.5",
  "pin-project-lite",
- "slab",
  "tokio",
 ]
 
