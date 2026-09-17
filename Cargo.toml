@@ -88,11 +88,14 @@ rate-limit = { existing-packages = 50 }
 allow-branch = ["*"]
 
 [workspace.package]
-authors    = ["Penumbra Labs <team@penumbralabs.xyz"]
+authors    = [
+    "Rotko Networks <hq@rotko.net>",
+    "Penumbra Labs <team@penumbralabs.xyz>",
+]
 edition    = "2021"
 version    = "2.0.13"
-repository = "https://github.com/penumbra-zone/penumbra"
-homepage   = "https://penumbra.zone"
+repository = "https://github.com/penumbrafi/penumbra"
+homepage   = "https://penumbra.fi"
 license    = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
