@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use cnidarium::{
-    copy_column_families, prune_main_substore, verify_column_families, PruneConfig, Storage,
+    copy_column_families, prune_main_substore, verify_column_families, PruneConfig, PruneMode,
+    Storage,
 };
 use jmt::RootHash;
 use penumbra_sdk_app::SUBSTORE_PREFIXES;
@@ -32,12 +33,18 @@ const REBUILT_COLUMN_FAMILIES: [&str; 2] = ["substore--jmt", "substore--jmt-valu
 /// Operator-facing options for pruning.
 #[derive(Debug, Clone)]
 pub struct PruneOptions {
-    /// Number of key-value pairs per range-proof-verified chunk.
+    /// Number of key-value pairs per chunk.
     pub chunk_size: usize,
     /// Delete the unpruned database (`rocksdb_old`) after a successful swap.
     /// Off by default so the operator keeps a rollback until the pruned node
     /// has been verified to sync.
     pub delete_old_db: bool,
+    /// Which pruning mode to use. `Verified` (default) does per-chunk range-
+    /// proof generation and verification — safest, slowest. `Unverified`
+    /// skips that per-chunk step, still checks the rebuilt root hash matches
+    /// the source root at the end of each substore. ~3× faster on
+    /// mainnet-scale JMTs; documented on `cnidarium::prune::PruneMode`.
+    pub mode: PruneMode,
 }
 
 impl Default for PruneOptions {
@@ -45,6 +52,7 @@ impl Default for PruneOptions {
         Self {
             chunk_size: 100_000,
             delete_old_db: false,
+            mode: PruneMode::Verified,
         }
     }
 }
@@ -130,6 +138,7 @@ pub async fn prune(pd_home: &PathBuf, options: &PruneOptions) -> Result<(RootHas
     let chunk_size = options.chunk_size;
     let prune_config = PruneConfig {
         chunk_size,
+        mode: options.mode,
         ..Default::default()
     };
     tracing::info!(chunk_size, "pruning main store");

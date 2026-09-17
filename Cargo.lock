@@ -1324,7 +1324,7 @@ dependencies = [
 [[package]]
 name = "cnidarium"
 version = "0.83.2"
-source = "git+https://github.com/penumbrafi/cnidarium?rev=2105ac84d526b688c6e056d5ab88ab1673bc7253#2105ac84d526b688c6e056d5ab88ab1673bc7253"
+source = "git+https://github.com/penumbrafi/cnidarium?rev=23acd003f0271f2eba1770c92205e6bac21c96a3#23acd003f0271f2eba1770c92205e6bac21c96a3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3880,7 +3880,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e310b3a6b5907f99202fcdb4960ff45b93735d7c7d96b760fcff8db2dc0e103d"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -6877,7 +6877,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0f3e5beed80eb580c68e2c600937ac2c4eedabdfd5ef1e5b7ea4f3fba84497b"
 dependencies = [
  "heck 0.5.0",
- "itertools 0.11.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "once_cell",
@@ -6910,7 +6910,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "157c5a9d7ea5c2ed2d9fb8f495b64759f7816c7eaea54ba3978f0d63000162e3"
 dependencies = [
  "anyhow",
- "itertools 0.11.0",
+ "itertools 0.13.0",
  "proc-macro2 1.0.93",
  "quote",
  "syn 2.0.96",

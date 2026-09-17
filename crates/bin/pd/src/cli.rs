@@ -187,7 +187,7 @@ pub enum MigrateCommand {
     /// `--delete-old-db` is passed, so the operator can roll back until the
     /// pruned node has been verified.
     Prune {
-        /// Number of key-value pairs per range-proof-verified chunk.
+        /// Number of key-value pairs per chunk.
         #[clap(long, env = "PRUNE_CHUNK_SIZE", default_value_t = 100_000)]
         chunk_size: usize,
         /// Delete the unpruned database after a successful swap instead of
@@ -205,6 +205,24 @@ pub enum MigrateCommand {
         /// answer the prompt themselves.
         #[clap(long, short = 'y')]
         yes: bool,
+        /// Skip per-chunk range-proof generation and verification. About 3×
+        /// faster on penumbra-1 mainnet-scale JMTs (from ~15 h to ~5 h).
+        /// The rebuilt root hash is still compared against the source's
+        /// root at the end of each substore, so gross iteration or write
+        /// errors are still caught — but a corrupted source that produces
+        /// the same final root will not be detected per-chunk.
+        ///
+        /// Requires `--i-understand-this-drops-per-chunk-verification` to
+        /// actually take effect, so nobody trips into this by mistake.
+        /// Strongly recommend taking a filesystem snapshot (ZFS, btrfs,
+        /// LVM) before running with this flag so you have a working
+        /// rollback path even outside pd's own `rocksdb_old`.
+        #[clap(long)]
+        unverified: bool,
+        /// Confirmation flag that unblocks `--unverified`. Split off from
+        /// `--unverified` itself so operators can't set it accidentally.
+        #[clap(long)]
+        i_understand_this_drops_per_chunk_verification: bool,
     },
 }
 

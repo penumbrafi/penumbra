@@ -578,8 +578,30 @@ async fn main() -> anyhow::Result<()> {
                 delete_old_db,
                 dry_run,
                 yes,
+                unverified,
+                i_understand_this_drops_per_chunk_verification,
             }) = migration_type
             {
+                // `--unverified` is a foot-gun for anyone restoring an archive
+                // fetched over an untrusted network; require the paired
+                // confirmation flag so the operator has to affirm they know
+                // what they are opting into.
+                if unverified && !i_understand_this_drops_per_chunk_verification {
+                    eprintln!(
+                        "--unverified drops per-chunk range-proof verification. \
+                         Only run this against a source database you trust; a filesystem \
+                         snapshot (ZFS/btrfs/LVM) taken before the prune is strongly \
+                         recommended for rollback. Add \
+                         --i-understand-this-drops-per-chunk-verification to proceed."
+                    );
+                    exit(2)
+                }
+                let mode = if unverified {
+                    cnidarium::PruneMode::Unverified
+                } else {
+                    cnidarium::PruneMode::Verified
+                };
+
                 // Preflight: report source size, estimated duration, RAM peak,
                 // faster alternatives, and whether this looks like a live node.
                 // Runs first even in the normal (non-dry-run) path so the
@@ -613,10 +635,11 @@ async fn main() -> anyhow::Result<()> {
 
                 // Non-consensus-breaking and safe to run any time the node is stopped.
                 // Handled before any halt-bit check so the database is opened once.
-                tracing::info!("performing JMT pruning");
+                tracing::info!(?mode, "performing JMT pruning");
                 let options = pd::migrate::prune::PruneOptions {
                     chunk_size,
                     delete_old_db,
+                    mode,
                 };
                 let (root_hash, version) = pd::migrate::prune::prune(&pd_home, &options)
                     .instrument(pd_migrate_span)
