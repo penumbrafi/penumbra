@@ -86,6 +86,12 @@ pub struct Ics20Withdrawal {
     /// Whether to use a transparent address (bech32, 32-byte) for the return address in the withdrawal.
     #[prost(bool, tag = "10")]
     pub use_transparent_address: bool,
+    /// The source client used for the withdrawal, for IBC v2 (client-routed) transfers.
+    /// Exactly one of `source_channel` and `source_client` must be set. When
+    /// `source_client` is set, `timeout_height` is ignored and `timeout_time` is
+    /// interpreted at second precision (IBC v2 timeouts are unix seconds).
+    #[prost(string, tag = "11")]
+    pub source_client: ::prost::alloc::string::String,
 }
 impl ::prost::Name for Ics20Withdrawal {
     const NAME: &'static str = "Ics20Withdrawal";

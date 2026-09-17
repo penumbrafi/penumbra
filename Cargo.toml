@@ -241,3 +241,5 @@ getrandom                        = { version = "0.2", default-features = false }
 # Without this, the git dependency for ledger-lib will depend on the crates.io v0.1 version,
 # and will fail to build.
 ledger-proto = { git = "https://github.com/ledger-community/rust-ledger", rev = "510bb3ca30639af4bdb12a918b6bbbdb75fa5f52" }
+# IBC v2 needs byte-keyed verifiable state (penumbrafi/cnidarium#3), rebased on the 0.83.0 tag this workspace pins.
+cnidarium = { git = "https://github.com/penumbrafi/cnidarium", branch = "feat/byte-keys-0.83" }
