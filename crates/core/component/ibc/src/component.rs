@@ -6,6 +6,7 @@ mod client_recovery;
 mod connection;
 mod connection_counter;
 mod ics02_validation;
+mod light_client;
 
 #[cfg(feature = "rpc")]
 pub mod rpc;
@@ -36,6 +37,9 @@ pub use client_recovery::ClientRecoveryExt;
 pub use connection::StateReadExt as ConnectionStateReadExt;
 pub use connection::StateWriteExt as ConnectionStateWriteExt;
 pub use host_interface::HostInterface;
+pub use light_client::{
+    ClientKindRead, LightClient, LightClientKind, TendermintLightClient, VerifiedUpdate,
+};
 pub use view::{StateReadExt, StateWriteExt};
 
 pub use ibc_component::Ibc;

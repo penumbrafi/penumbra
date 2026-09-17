@@ -56,7 +56,7 @@ impl Display for ClientStatus {
 }
 
 #[async_trait]
-pub(crate) trait Ics2ClientExt: StateWrite {
+pub(crate) trait Ics2ClientExt: StateRead {
     // given an already verified tendermint header, and a trusted tendermint client state, compute
     // the next client and consensus states.
     async fn next_tendermint_state(
@@ -144,7 +144,7 @@ pub(crate) trait Ics2ClientExt: StateWrite {
     }
 }
 
-impl<T: StateWrite + ?Sized> Ics2ClientExt for T {}
+impl<T: StateRead + ?Sized> Ics2ClientExt for T {}
 
 #[async_trait]
 pub trait ConsensusStateWriteExt: StateWrite + Sized {

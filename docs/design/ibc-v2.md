@@ -1,7 +1,6 @@
 # IBC v2 on Penumbra: phase 1 design
 
-Status: implemented on `spike/ibc-v2` (2026-09-17), light client trait
-pending. Tracks penumbrafi/penumbra#24. Phase 0 spikes are recorded as
+Status: implemented on `spike/ibc-v2` (2026-09-17). Tracks penumbrafi/penumbra#24. Phase 0 spikes are recorded as
 comments on that issue; this note describes the phase 1 change to `pd` as
 built. Where the implementation diverged from the first draft, the text
 says so.
@@ -64,60 +63,45 @@ code exists.
 
 ## 1. Client abstraction
 
-**Not yet built.** v2 proof verification (`component/v2/proof.rs`) goes
-through the existing Tendermint-typed client store: frozen check,
-`verify_height`, consensus state at the proof height, then chained raw ICS23
-over byte paths. The trait below is the planned refactor that moves
-Tendermint behind an interface so the Eureka Ethereum client can sit beside
-it; it is the only change to classic code in phase 1 and lands as its own
-commit.
+As built (`component/light_client.rs`): client and consensus states are
+already stored as protobuf `Any` (`TendermintClientState: DomainType<Proto =
+Any>`), so a client's kind is read from the type URL of its stored client
+state without touching the Tendermint decode path. Dispatch is a `match` on
+an enum, not `Box<dyn LightClient>`: async methods generic over the state
+are not object-safe, and clients are compiled into `pd` (no wasm VM).
 
 ```rust
-pub trait LightClient: Send + Sync {
-    /// Type URL this client answers for (`/ibc.lightclients.tendermint.v1.ClientState`, ...).
-    fn client_type(&self) -> &'static str;
+pub enum LightClientKind { Tendermint }          // one variant per compiled-in client
 
-    /// Verify a header against stored client + consensus state. Returns the
-    /// new consensus state and the height it is stored at. Must be
-    /// deterministic and bounded; no allocation proportional to untrusted input
-    /// beyond the message size.
-    fn verify_header(&self, store: &dyn ClientStore, client_id: &ClientId,
-                     header: Any, now: Timestamp) -> Result<(Height, ConsensusStateAny)>;
-
-    /// Membership of `value` at `path` (raw bytes, already prefixed by the
-    /// counterparty's merkle prefix by the caller) under the consensus state
-    /// at `height`.
-    fn verify_membership(&self, store: &dyn ClientStore, client_id: &ClientId,
-                         height: Height, proof: &[u8], path: &[Vec<u8>], value: &[u8]) -> Result<()>;
-
-    fn verify_non_membership(&self, store: &dyn ClientStore, client_id: &ClientId,
-                             height: Height, proof: &[u8], path: &[Vec<u8>]) -> Result<()>;
-
-    /// Returns Ok(true) if `evidence` proves misbehaviour; the caller freezes.
-    fn check_misbehaviour(&self, store: &dyn ClientStore, client_id: &ClientId,
-                          evidence: Any) -> Result<bool>;
-
-    /// Consensus-state timestamp at `height`, for timeout checks.
-    fn consensus_timestamp(&self, store: &dyn ClientStore, client_id: &ClientId,
-                           height: Height) -> Result<Timestamp>;
+#[async_trait]
+pub trait LightClient {
+    const KIND: LightClientKind;
+    async fn verify_header<S: StateRead, HI>(state: &S, client_id, client_message: Any) -> Result<VerifiedUpdate>;
+    async fn check_misbehaviour<S: StateRead, HI>(state: &S, client_id, misbehaviour: Any) -> Result<Any>; // frozen client state
+    async fn status<S: StateRead>(state: &S, client_id, now: Time) -> Result<ClientStatus>;
+    async fn verify_membership<S: StateRead>(state: &S, client_id, height, proof, path: &[Vec<u8>], value: &[u8]) -> Result<()>;
+    async fn verify_non_membership<S: StateRead>(state: &S, client_id, height, proof, path: &[Vec<u8>]) -> Result<()>;
+    async fn consensus_timestamp<S: StateRead>(state: &S, client_id, height) -> Result<Time>;
 }
 ```
 
-`ClientStore` is the existing `ics02` state (client state, consensus states
-by height, processed time/height for delay periods) generalised to store
-`Any` rather than Tendermint types. Pruning of consensus states stays in the
-component, keyed by height as today.
+`TendermintLightClient` implements it by calling the existing verification
+code, which was factored into `verify_tendermint_update` and
+`verify_tendermint_misbehaviour` (no writes) rather than rewritten. Dispatch
+points: the v2 proof verifier (`component/v2/proof.rs`) and the tops of
+`CreateClient`, `UpdateClient` and `SubmitMisbehaviour`, where the Tendermint
+arm is the previous code. The classic connection and channel handlers stay
+Tendermint-typed on purpose: only Tendermint chains speak classic IBC, and
+Ethereum has no classic IBC to reach them. The client store's typed
+accessors (`get_client_state` returning the Tendermint type) remain for
+those callers; a second kind reads its own state through the `Any`.
 
-Dispatch is a static registry keyed by type URL, filled at genesis with
-`TendermintClient` and, in phase 2, `EthereumClient`. No wasm VM: clients are
-compiled into `pd` and enabled by chain upgrade, which is the same trust model
-as everything else in consensus.
-
-Retrofit: `ics02_validation.rs` stops matching type URLs by hand; the update,
-misbehaviour and proof-verification handlers call the trait. Classic packet
-handlers keep calling `verify_membership` through the same trait, so the
-Tendermint retrofit is exercised by existing classic tests before any v2 code
-lands.
+Adding the Eureka Ethereum client in phase 2 means: a `LightClientKind`
+variant, a `LightClient` impl over the `ethereum-light-client` crate, an arm
+in `CreateClient` for its client id prefix and state validation, and an arm
+in each dispatch `match`. Regression gate for the retrofit:
+`test_create_and_update_light_client` (real header fixtures through the
+real update path) and the classic `ics20_transfer_no_timeouts` app-test.
 
 ## 2. v2 beside classic
 
@@ -363,10 +347,11 @@ Done on `spike/ibc-v2`:
    ack rejected; timeout via non-membership proof with the consensus
    timestamp check both failing and passing; send window checks.
 
+7. `LightClient` trait with the Tendermint implementation and dispatch in
+   the client lifecycle handlers and v2 proofs (§1).
+
 Not done:
 
-- `LightClient` trait and Tendermint retrofit (§1). Needed before the
-  Eureka Ethereum client can be added; classic code is untouched so far.
 - Hermes fork `RelayPathV2` for a Penumbra endpoint, and the two-pd devnet
   self-pairing run; then Penumbra ↔ a local ibc-go v10 simapp.
 - Genesis/params (`MAX_TIMEOUT_DELTA` is a constant, allowed client types

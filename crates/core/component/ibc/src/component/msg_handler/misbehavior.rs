@@ -1,12 +1,11 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use cnidarium::{StateRead, StateWrite};
-use ibc_types::core::client::{events, ClientType};
+use ibc_types::core::client::events;
 use ibc_types::core::client::{msgs::MsgSubmitMisbehaviour, ClientId};
 use ibc_types::lightclients::tendermint::client_state::ClientState as TendermintClientState;
 use ibc_types::lightclients::tendermint::header::Header as TendermintHeader;
 use ibc_types::lightclients::tendermint::misbehaviour::Misbehaviour as TendermintMisbehavior;
-use ibc_types::lightclients::tendermint::TENDERMINT_CLIENT_TYPE;
 use tendermint_light_client_verifier::{
     types::{TrustedBlockState, UntrustedBlockState},
     ProdVerifier, Verdict, Verifier,
@@ -16,6 +15,7 @@ use super::update_client::verify_header_validator_set;
 use super::MsgHandler;
 use crate::component::client::StateWriteExt as _;
 use crate::component::HostInterface;
+use crate::component::light_client::{ClientKindRead as _, LightClientKind};
 use crate::component::{ics02_validation, ClientStateReadExt as _};
 
 #[async_trait]
@@ -39,54 +39,25 @@ impl MsgHandler for MsgSubmitMisbehaviour {
     async fn try_execute<S: StateWrite, H, HI: HostInterface>(&self, mut state: S) -> Result<()> {
         tracing::debug!(msg = ?self);
 
-        let untrusted_misbehavior =
-            ics02_validation::get_tendermint_misbehavior(self.misbehaviour.clone())?;
-
-        // misbehavior must either contain equivocation or timestamp monotonicity violation
-        if !misbehavior_equivocation_violation(&untrusted_misbehavior)
-            && !misbehavior_timestamp_monotonicity_violation(&untrusted_misbehavior)
-        {
-            anyhow::bail!(
-                "misbehavior must either contain equivocation or timestamp monotonicity violation"
-            );
+        let kind = state.client_kind(&self.client_id).await?;
+        match kind {
+            LightClientKind::Tendermint => {
+                let untrusted_misbehavior =
+                    ics02_validation::get_tendermint_misbehavior(self.misbehaviour.clone())?;
+                let frozen_client = verify_tendermint_misbehaviour::<&S, HI>(
+                    &state,
+                    &self.client_id,
+                    &untrusted_misbehavior,
+                )
+                .await?;
+                state.put_client(&self.client_id, frozen_client);
+            }
         }
-
-        // verify that both headers verify for an update client on the last trusted header for
-        // client_id
-        let client_state = client_is_present(&state, self).await?;
-
-        // NOTE: we are allowing expired clients here. it seems correct to allow expired clients to
-        // be frozen on evidence of misbehavior.
-        client_is_not_frozen(&client_state)?;
-
-        let trusted_client_state = client_state;
-
-        verify_misbehavior_header::<&S, HI>(
-            &state,
-            &untrusted_misbehavior.client_id,
-            &untrusted_misbehavior.header1,
-            &trusted_client_state,
-        )
-        .await?;
-        verify_misbehavior_header::<&S, HI>(
-            &state,
-            &untrusted_misbehavior.client_id,
-            &untrusted_misbehavior.header2,
-            &trusted_client_state,
-        )
-        .await?;
-
-        tracing::info!(client_id = ?untrusted_misbehavior.client_id, "received valid misbehavior evidence! freezing client");
-
-        // freeze the client
-        let frozen_client =
-            trusted_client_state.with_frozen_height(untrusted_misbehavior.header1.height());
-        state.put_client(&self.client_id, frozen_client);
 
         state.record(
             events::ClientMisbehaviour {
                 client_id: self.client_id.clone(),
-                client_type: ClientType::new(TENDERMINT_CLIENT_TYPE.to_string()),
+                client_type: kind.client_type(),
             }
             .into(),
         );
@@ -95,13 +66,52 @@ impl MsgHandler for MsgSubmitMisbehaviour {
     }
 }
 
-async fn client_is_present<S: StateRead>(
+/// Verify Tendermint misbehaviour evidence against the stored client and
+/// return the frozen client state to store. Does not write.
+pub(crate) async fn verify_tendermint_misbehaviour<S: StateRead, HI: HostInterface>(
     state: S,
-    msg: &MsgSubmitMisbehaviour,
-) -> anyhow::Result<TendermintClientState> {
-    state.get_client_type(&msg.client_id).await?;
+    client_id: &ClientId,
+    untrusted_misbehavior: &TendermintMisbehavior,
+) -> Result<TendermintClientState> {
+    // misbehavior must either contain equivocation or timestamp monotonicity violation
+    if !misbehavior_equivocation_violation(untrusted_misbehavior)
+        && !misbehavior_timestamp_monotonicity_violation(untrusted_misbehavior)
+    {
+        anyhow::bail!(
+            "misbehavior must either contain equivocation or timestamp monotonicity violation"
+        );
+    }
 
-    state.get_client_state(&msg.client_id).await
+    // verify that both headers verify for an update client on the last trusted header for
+    // client_id
+    state.get_client_type(client_id).await?;
+    let client_state = state.get_client_state(client_id).await?;
+
+    // NOTE: we are allowing expired clients here. it seems correct to allow expired clients to
+    // be frozen on evidence of misbehavior.
+    client_is_not_frozen(&client_state)?;
+
+    let trusted_client_state = client_state;
+
+    verify_misbehavior_header::<&S, HI>(
+        &state,
+        &untrusted_misbehavior.client_id,
+        &untrusted_misbehavior.header1,
+        &trusted_client_state,
+    )
+    .await?;
+    verify_misbehavior_header::<&S, HI>(
+        &state,
+        &untrusted_misbehavior.client_id,
+        &untrusted_misbehavior.header2,
+        &trusted_client_state,
+    )
+    .await?;
+
+    tracing::info!(client_id = ?untrusted_misbehavior.client_id, "received valid misbehavior evidence! freezing client");
+
+    // freeze the client
+    Ok(trusted_client_state.with_frozen_height(untrusted_misbehavior.header1.height()))
 }
 
 fn client_is_not_frozen(client: &TendermintClientState) -> anyhow::Result<()> {

@@ -16,6 +16,9 @@ mod timeout;
 mod update_client;
 mod upgrade_client;
 
+pub(crate) use misbehavior::verify_tendermint_misbehaviour;
+pub(crate) use update_client::verify_tendermint_update;
+
 use crate::component::app_handler::{AppHandlerCheck, AppHandlerExecute};
 use anyhow::Result;
 use async_trait::async_trait;

@@ -10,6 +10,7 @@ use crate::component::{
     client::{ConsensusStateWriteExt as _, StateReadExt as _, StateWriteExt as _},
     client_counter::ClientCounter,
     ics02_validation,
+    light_client::LightClientKind,
     v2::V2StateWriteExt as _,
     HostInterface, MsgHandler,
 };
@@ -17,8 +18,12 @@ use crate::component::{
 #[async_trait]
 impl MsgHandler for MsgCreateClient {
     async fn check_stateless<H>(&self) -> Result<()> {
-        client_state_is_tendermint(self)?;
-        consensus_state_is_tendermint(self)?;
+        match LightClientKind::from_client_state_type_url(&self.client_state.type_url)? {
+            LightClientKind::Tendermint => {
+                client_state_is_tendermint(self)?;
+                consensus_state_is_tendermint(self)?;
+            }
+        }
 
         Ok(())
     }
@@ -32,6 +37,10 @@ impl MsgHandler for MsgCreateClient {
     // - processed time and height
     async fn try_execute<S: StateWrite, AH, HI: HostInterface>(&self, mut state: S) -> Result<()> {
         tracing::debug!(msg = ?self);
+        let kind = LightClientKind::from_client_state_type_url(&self.client_state.type_url)?;
+        // Only Tendermint clients exist today; a second kind adds an arm here
+        // (its own client id prefix, state validation and storage).
+        let LightClientKind::Tendermint = kind;
         let client_state =
             ics02_validation::get_tendermint_client_state(self.client_state.clone())?;
 
