@@ -1324,7 +1324,7 @@ dependencies = [
 [[package]]
 name = "cnidarium"
 version = "0.83.2"
-source = "git+https://github.com/penumbrafi/cnidarium?rev=2105ac84d526b688c6e056d5ab88ab1673bc7253#2105ac84d526b688c6e056d5ab88ab1673bc7253"
+source = "git+https://github.com/penumbrafi/cnidarium?branch=feat/prune-unverified-mode#e1e3a8b89d21101c79237fcba5a9c75ff47b187a"
 dependencies = [
  "anyhow",
  "async-trait",
