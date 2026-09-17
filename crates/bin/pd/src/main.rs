@@ -539,7 +539,7 @@ async fn main() -> anyhow::Result<()> {
                     Ok((parse_key(old)?, parse_key(new)?))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            let unsafe_test = pd::migrate::restart_fork::UnsafeTestOptions {
+            let unsafe_test = pd::migrate::mainnet5_community_fork::UnsafeTestOptions {
                 chain_id: unsafe_test_chain_id,
                 rekey,
             };
@@ -549,7 +549,7 @@ async fn main() -> anyhow::Result<()> {
                     "DRILL MODE: the result is NOT the mainnet restart state"
                 );
             }
-            pd::migrate::restart_fork::run(pd_home, comet_home, remove, new_state, unsafe_test)
+            pd::migrate::mainnet5_community_fork::run(pd_home, comet_home, remove, new_state, unsafe_test)
                 .await
                 .context("restart-fork migration failed")?;
         }

@@ -1,3 +1,14 @@
+//! Mainnet-5: community coordinated-restart ("hard-fork") migration.
+//!
+//! Naming: this file was called `restart_fork.rs` in earlier revisions of
+//! the fork. Renamed to fit the `mainnet<N>.rs` convention used for every
+//! prior on-chain migration (mainnet1..4). This is the fifth mainnet
+//! migration penumbra-1 has taken and the first one authored by the
+//! community fork (the upstream mainnet1..4 preceded it), hence
+//! `mainnet5_community_fork`. Internal `tracing::info!` messages keep
+//! their `restart-fork:` prefix so operator archives from the actual
+//! Sep 2026 restart remain grep-able.
+//!
 //! Coordinated-restart ("hard-fork") migration for a chain halted by liveness loss.
 //!
 //! 1. Removes the given validators from the active set (Active -> Jailed, or Disabled) so
