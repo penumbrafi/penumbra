@@ -42,7 +42,9 @@ use penumbra_sdk_keys::{Address, FullViewingKey};
 use penumbra_sdk_num::Amount;
 use penumbra_sdk_proto::DomainType;
 use penumbra_sdk_sct::epoch::Epoch;
-use penumbra_sdk_shielded_pool::{Ics20Withdrawal, Note, OutputPlan, Rseed, SpendPlan};
+use penumbra_sdk_shielded_pool::{
+    Ics20Withdrawal, Ics20WithdrawalSource, Note, OutputPlan, Rseed, SpendPlan,
+};
 use penumbra_sdk_stake::{
     validator, validator::Definition, Delegate, FundingStreams, GovernanceKey, IdentityKey,
     Penalty, Undelegate, UndelegateClaimPlan,
@@ -558,7 +560,7 @@ fn ics20_withdrawal_strategy() -> impl Strategy<Value = Ics20Withdrawal> {
                 return_address,
                 timeout_height: Height::new(revision_number, revision_height).expect("test value"),
                 timeout_time: 0u64,
-                source_channel: ChannelId::default(),
+                source: Ics20WithdrawalSource::Channel(ChannelId::default()),
                 use_compat_address: false,
                 use_transparent_address: false,
                 ics20_memo: String::default(),

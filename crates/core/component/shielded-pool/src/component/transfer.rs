@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use crate::{
-    component::{AssetRegistry, NoteManager},
+    component::{transfer_v2, AssetRegistry, NoteManager},
     event::{self, FungibleTokenTransferPacketMetadata},
     Ics20Withdrawal,
 };
@@ -77,8 +77,20 @@ pub trait Ics20TransferReadExt: StateRead {
         withdrawal: &Ics20Withdrawal,
         current_block_time: Time,
     ) -> Result<()> {
+        if let Some(source_client) = withdrawal.source_client() {
+            return transfer_v2::withdrawal_check_v2(
+                self,
+                withdrawal,
+                source_client,
+                current_block_time,
+            )
+            .await;
+        }
+
         // create packet
-        let packet: IBCPacket<Unchecked> = withdrawal.clone().into();
+        let packet: IBCPacket<Unchecked> = withdrawal
+            .v1_packet()
+            .ok_or_else(|| anyhow::anyhow!("withdrawal has no source channel"))?;
 
         // send packet
         self.send_packet_check(packet, current_block_time).await?;
@@ -92,15 +104,25 @@ impl<T: StateRead + ?Sized> Ics20TransferReadExt for T {}
 #[async_trait]
 pub trait Ics20TransferWriteExt: StateWrite {
     async fn withdrawal_execute(&mut self, withdrawal: &Ics20Withdrawal) -> Result<()> {
-        // create packet, assume it's already checked since the component caller contract calls `check` before `execute`
-        let checked_packet = IBCPacket::<Unchecked>::from(withdrawal.clone()).assume_checked();
+        if let Some(source_client) = withdrawal.source_client() {
+            return transfer_v2::withdrawal_execute_v2(self, withdrawal, source_client).await;
+        }
+        let source_channel = withdrawal
+            .source_channel()
+            .ok_or_else(|| anyhow::anyhow!("withdrawal has no source channel"))?;
 
-        let prefix = format!("transfer/{}/", &withdrawal.source_channel);
+        // create packet, assume it's already checked since the component caller contract calls `check` before `execute`
+        let checked_packet = withdrawal
+            .v1_packet()
+            .ok_or_else(|| anyhow::anyhow!("withdrawal has no source channel"))?
+            .assume_checked();
+
+        let prefix = format!("transfer/{}/", source_channel);
         if !withdrawal.denom.starts_with(&prefix) {
             // we are the source. add the value balance to the escrow channel.
             let existing_value_balance: Amount = self
                 .get(&state_key::ics20_value_balance::by_asset_id(
-                    &withdrawal.source_channel,
+                    source_channel,
                     &withdrawal.denom.id(),
                 ))
                 .await
@@ -114,7 +136,7 @@ pub trait Ics20TransferWriteExt: StateWrite {
                 })?;
             self.put(
                 state_key::ics20_value_balance::by_asset_id(
-                    &withdrawal.source_channel,
+                    source_channel,
                     &withdrawal.denom.id(),
                 ),
                 new_value_balance,
@@ -128,10 +150,10 @@ pub trait Ics20TransferWriteExt: StateWrite {
                     sender: withdrawal.return_address.clone(),
                     receiver: withdrawal.destination_chain_address.clone(),
                     meta: FungibleTokenTransferPacketMetadata {
-                        channel: withdrawal.source_channel.0.clone(),
+                        channel: source_channel.0.clone(),
                         sequence: self
                             .get_send_sequence(
-                                &withdrawal.source_channel,
+                                source_channel,
                                 &checked_packet.source_port(),
                             )
                             .await?,
@@ -149,7 +171,7 @@ pub trait Ics20TransferWriteExt: StateWrite {
             // were Byzantine we could lie to them).
             let value_balance: Amount = self
                 .get(&state_key::ics20_value_balance::by_asset_id(
-                    &withdrawal.source_channel,
+                    source_channel,
                     &withdrawal.denom.id(),
                 ))
                 .await?
@@ -167,7 +189,7 @@ pub trait Ics20TransferWriteExt: StateWrite {
                     })?;
             self.put(
                 state_key::ics20_value_balance::by_asset_id(
-                    &withdrawal.source_channel,
+                    source_channel,
                     &withdrawal.denom.id(),
                 ),
                 new_value_balance,
@@ -181,10 +203,10 @@ pub trait Ics20TransferWriteExt: StateWrite {
                     sender: withdrawal.return_address.clone(),
                     receiver: withdrawal.destination_chain_address.clone(),
                     meta: FungibleTokenTransferPacketMetadata {
-                        channel: withdrawal.source_channel.0.clone(),
+                        channel: source_channel.0.clone(),
                         sequence: self
                             .get_send_sequence(
-                                &withdrawal.source_channel,
+                                source_channel,
                                 &checked_packet.source_port(),
                             )
                             .await?,

@@ -1,8 +1,10 @@
 # IBC v2 on Penumbra: phase 1 design
 
-Status: draft, 2026-09-17. Tracks penumbrafi/penumbra#24. Phase 0 spikes are
-recorded as comments on that issue; this note turns their answers into the
-shape of the phase 1 change to `pd`.
+Status: implemented on `spike/ibc-v2` (2026-09-17), light client trait
+pending. Tracks penumbrafi/penumbra#24. Phase 0 spikes are recorded as
+comments on that issue; this note describes the phase 1 change to `pd` as
+built. Where the implementation diverged from the first draft, the text
+says so.
 
 Scope: v2 packet core, client abstraction, ICS-20 over v2, events. Out of
 scope here: the Ethereum client itself (phase 2, decided as the Eureka
@@ -62,8 +64,13 @@ code exists.
 
 ## 1. Client abstraction
 
-Phase 1 introduces one trait and moves Tendermint behind it. That move is the
-only change to classic code in phase 1; everything else is additive.
+**Not yet built.** v2 proof verification (`component/v2/proof.rs`) goes
+through the existing Tendermint-typed client store: frozen check,
+`verify_height`, consensus state at the proof height, then chained raw ICS23
+over byte paths. The trait below is the planned refactor that moves
+Tendermint behind an interface so the Eureka Ethereum client can sit beside
+it; it is the only change to classic code in phase 1 and lands as its own
+commit.
 
 ```rust
 pub trait LightClient: Send + Sync {
@@ -119,8 +126,13 @@ unchanged (Noble, Osmosis, Celestia routes), and v2 is a second packet layer
 over the same client store. No changes to `packet.rs`, `msg_handler/`
 channel handlers, or the shielded-pool channel-keyed escrow.
 
-New module: `component/v2/` with `counterparty.rs`, `packet.rs`,
-`commitment.rs`, `router.rs`, `msg_handler/{send,recv,ack,timeout,register}.rs`.
+As built: `src/v2/{proto,msgs,commitment}.rs` (wire types, domain types and
+the commitment scheme; usable without the `component` feature, e.g. by
+relayers) and `src/component/v2/{state,state_key,proof,app_handler,events,
+send,msg_handler/{register_counterparty,recv_packet,acknowledgement,timeout}}.rs`.
+`ibc-proto` 0.51 ships no v2 protos, so `v2/proto.rs` hand-writes the
+`ibc.core.channel.v2` / `ibc.core.client.v2` messages with ibc-go's field
+numbers and type URLs.
 
 ### State layout (all under the `ibc-data` substore)
 
@@ -128,15 +140,15 @@ String-keyed, non-provable-by-counterparty (internal bookkeeping):
 
 | key | value |
 |---|---|
-| `ibc-data/v2/counterparty/{client_id}` | `Counterparty { client_id: String, merkle_prefix: Vec<Vec<u8>> }` |
-| `ibc-data/v2/next_sequence_send/{client_id}` | u64 |
+| `ibc-data/v2/counterparty/{client_id}` | `ibc.core.client.v2.CounterpartyInfo { merkle_prefix, client_id }` |
+| `ibc-data/v2/nextSequenceSend/{client_id}` | u64, set to 1 at registration (ibc-go) |
 
 Byte-keyed, ICS-24 v2, verified by counterparties (§0):
 
 | key | value |
 |---|---|
 | `ibc-data/` ‖ `clientId‖0x01‖seq_be` | 32-byte packet commitment |
-| `ibc-data/` ‖ `clientId‖0x02‖seq_be` | receipt: any non-zero value; we store 32-byte `sha256(packet)`. ibc-go stores a one-byte sentinel, Eureka `keccak256(abi.encode(packet))`; only non-membership is ever proved |
+| `ibc-data/` ‖ `clientId‖0x02‖seq_be` | receipt: any non-zero value; we store the 32-byte packet commitment. ibc-go stores a one-byte sentinel, Eureka `keccak256(abi.encode(packet))`; only non-membership is ever proved |
 | `ibc-data/` ‖ `clientId‖0x03‖seq_be` | 32-byte ack commitment |
 
 The counterparty's merkle prefix for Penumbra is `["ibc-data", ""]` today
@@ -182,8 +194,9 @@ Test vectors: take the ICS24Host Foundry tests' packet and expected
 
 ## 3. Actions and messages
 
-Five new `IbcRelay` variants, one-to-one with ibc-go v2 messages so relayers
-and the proof-api need no translation layer:
+Four new `IbcRelay` variants, one-to-one with ibc-go v2 messages so relayers
+and the proof-api need no translation layer (a `MsgSendPacket` on the wire
+falls through to `Unknown` and is rejected, see below):
 
 | variant | proto (`ibc.core.channel.v2`) | handler |
 |---|---|---|
@@ -210,11 +223,25 @@ the `transfer` port at check time.
 **`RegisterCounterparty` front-running.** ibc-go requires `signer ==` client
 creator. Penumbra has no signer identity on `IbcRelay` and client creation
 is permissionless, so a one-shot permissionless registration lets anyone
-mis-pair a freshly created client forever. Phase 1 rule: `RegisterCounterparty`
-is valid only in the same transaction as the `CreateClient` it pairs, and
-must refer to the client id that transaction creates (atomic
-create-and-pair). Governance-gated registration is the fallback if the
-atomic form proves awkward for relayer tooling.
+mis-pair a freshly created client forever. Rule as built: `RegisterCounterparty`
+is valid only in the same transaction as the `CreateClient` it pairs.
+Mechanism: `CreateClient` appends the new id to an ephemeral object-store
+list; `RegisterCounterparty` requires membership; the app's transaction
+handler resets the list at the start of every transaction (ephemeral objects
+survive `StateDelta::apply` into the block, so the per-transaction reset is
+the whole security property). Our Hermes fork must bundle both messages in
+one Penumbra transaction.
+
+**Payload count.** Eureka's router rejects packets with more than one
+payload and ibc-go's transfer app handles one; Penumbra requires exactly
+one payload per packet in `check_stateless`, which also removes multi-app
+rollback ordering from the router.
+
+**Client ids inside packets** are validated strings (8 to 64 characters, no
+`/`), not `ibc_types::ClientId`: the Eureka Ethereum router names its
+clients `client-N` (8 characters), which ibc-types' 9-character minimum
+would reject. Penumbra's own id in a packet is parsed to a `ClientId` at
+the point of use.
 
 Hermes note: our fork's Penumbra endpoint does `IbcRelay::try_from(raw)
 .expect(..)` on every IBC action it sees in blocks. Ship the Hermes update in
@@ -224,41 +251,51 @@ transaction. Same applies to `pcli view`.
 ## 4. Payload router and ICS-20 v2
 
 v2 has no handshake, so the handshake-shaped `AppHandlerCheck/Execute` is
-not extended. New trait, registered by port string:
+not extended. `AppHandler` gains a supertrait, answered by port string:
 
 ```rust
-pub trait PayloadApp {
-    fn port(&self) -> &str;                       // "transfer"
-    fn on_send(state, source_client, seq, payload) -> Result<()>;
-    fn on_recv(state, packet, payload) -> Result<Ack>;   // Ack::Success(bytes) | Ack::Error
-    fn on_ack(state, packet, payload, ack: &[u8]) -> Result<()>;
-    fn on_timeout(state, packet, payload) -> Result<()>;
+pub trait AppHandlerV2 {
+    fn handles_port_v2(port: &str) -> bool;                       // "transfer"
+    async fn recv_payload_v2(state, packet, payload) -> Result<Vec<u8>>;   // app ack bytes
+    async fn acknowledge_payload_v2(state, packet, payload, ack: &[u8]) -> Result<()>;
+    async fn timeout_payload_v2(state, packet, payload) -> Result<()>;
 }
 ```
 
-Multi-payload packets: run apps in order; any `Ack::Error` or `Err` aborts
-the whole `RecvPacketV2` execution (state rolled back to before the first
-payload) and writes the universal error ack. Phase 1 registers only
-`transfer`; a packet with an unknown port is rejected at recv with the
-universal error ack, and rejected outright at send.
+On receive the application runs in a sub-`StateDelta`: `Err` (or an
+unknown port) discards its writes and the packet is acknowledged with the
+universal error acknowledgement while the transaction succeeds; `Ok(ack)`
+applies the writes and re-records the application's events on the parent
+(`StateDelta::apply` returns events rather than merging them). Sends have
+no router callback: the value-carrying action builds the payload itself.
 
-ICS-20 v2: encoding `application/x-protobuf` with `FungibleTokenPacketData`
-(ibc-go v2 uses ICS-20 v1 packet data over v2 transport; Eureka's
-`ICS20Transfer.sol` uses ABI encoding, `application/x-solidity-abi`). The
-payload app must accept both encodings, selected by `payload.encoding`;
-phase 1 implements protobuf and stubs ABI with a decode test against a
-Solidity-produced vector so phase 2 only fills in the transfer logic.
+ICS-20 v2 (`shielded-pool/src/component/transfer_v2.rs`): port `transfer`,
+version `ics20-1`, outbound encoding `application/x-protobuf` of
+`ibc.applications.transfer.v2.FungibleTokenPacketData` (the ibc-go type,
+from `ibc-proto`); `application/json` is accepted on receive;
+`application/x-solidity-abi` (what Eureka's `ICS20Transfer.sol` emits) is
+rejected with the error ack until phase 2 adds the ABI codec. Success ack is
+ibc-go's `{"result":"AQ=="}`. On acknowledgement, the universal error ack
+refunds; otherwise the bytes must parse as an ICS-20 JSON ack and an error
+result refunds.
 
-Escrow: new value-balance key `ics20_value_balance::by_client_id(client_id,
-asset_id)` beside the channel-keyed one; denom traces use `transfer/{client_id}`
-as the path segment (the existing trace parser already accepts it). No
-migration of channel-keyed balances.
+Escrow: value-balance key `ics20_value_balance::by_client_id(client_id,
+asset_id)` beside the channel-keyed one, keyed by the *local* client id the
+transfer was routed over; the hop prefix is `transfer/{client_id}/` (the
+existing trace parser already accepts it). No migration of channel-keyed
+balances.
 
-Wallet surface: `Ics20Withdrawal` gains nothing; a new
-`Ics20WithdrawalV2 { source_client, timeout_timestamp_secs, ... }` action
-burns value into the transaction balance and calls the internal v2
-`send_packet` with one transfer payload. `pcli tx withdraw --client
-07-tendermint-1` beside `--channel`.
+Wallet surface (diverges from the first draft, which proposed a separate
+`Ics20WithdrawalV2` action): `Ics20Withdrawal` gains proto field
+`string source_client = 11`, and the domain type's `source_channel` becomes
+`source: Ics20WithdrawalSource::{Channel(ChannelId), Client(ClientId)}`.
+Exactly one of the two proto fields may be set; existing withdrawals encode
+identically, so effect hashes and the signing test vectors are unchanged.
+With a source client the action escrows or burns exactly as before and calls
+the v2 `send_packet` with one transfer payload; `timeout_height` is ignored
+and `timeout_time` (nanoseconds, minute-aligned) is truncated to seconds.
+`pcli tx withdraw --client 07-tendermint-1` beside `--channel`, mutually
+exclusive.
 
 Verify in phase 1, not assumed: ibc-go v10 transfer over v2 uses the v1
 `FungibleTokenPacketData` struct with `application/x-protobuf` (the
@@ -283,9 +320,9 @@ Hermes v2 parse Penumbra with a subclass, not a rewrite:
 | `register_counterparty` | `client_id`, `counterparty_client_id` |
 
 `encoded_packet_hex` is the protobuf `ibc.core.channel.v2.Packet` bytes, hex
-lowercase, no prefix (what the proof-api decodes). Penumbra's own ABCI event
-plumbing already emits typed events; these are added as plain attribute
-events in the v2 handlers.
+lowercase, no prefix (what the proof-api decodes);
+`encoded_acknowledgement_hex` likewise for `Acknowledgement`. Emitted as
+plain indexed attribute events from `component/v2/events.rs`.
 
 ## 6. Ethereum router ownership (governance question, not decided here)
 
@@ -305,18 +342,37 @@ Either way the Penumbra client on Ethereum (SP1 ICS07 with JMT proof specs,
 or the attestation client to start) is ours to specify. Governance should
 decide this before phase 2 starts; phase 1 does not depend on it.
 
-## 7. Phase 1 deliverables, in order
+## 7. Phase 1 status
 
-1. cnidarium byte-key PR with proof test (§0).
-2. `LightClient` trait + Tendermint retrofit; classic tests green.
-3. `commitment.rs` with fixed vectors from ibc-go and ICS24Host.
-4. Protos + `IbcRelay` variants + handlers; counterparty registry; v2 keys.
-5. `PayloadApp` + ICS-20 v2 (protobuf), client-keyed escrow.
-6. Events; Hermes fork `RelayPathV2` for Penumbra ↔ Cosmos over v2;
-   two-pd devnet with a v2 self-pairing (Penumbra ↔ Penumbra) as the first
-   end-to-end test, then Penumbra ↔ a local ibc-go v10 simapp.
-7. `pcli` plan/view; genesis params (`MAX_TIMEOUT_DURATION`, allowed
-   client types); upgrade migration (no state migration needed, additive).
+Done on `spike/ibc-v2`:
+
+1. cnidarium byte-key change (penumbrafi/cnidarium#3), pinned via
+   `[patch.crates-io]` to the `feat/byte-keys-0.83` branch on the 0.83.0 tag.
+2. `v2/commitment.rs` with ibc-go's fixed vectors (packet, success ack,
+   error ack), Eureka's key vectors and prefixed-path vectors.
+3. Hand-written v2 protos, domain types, `IbcRelay` variants, handlers,
+   counterparty registry, byte-keyed v2 state, raw ICS23 proof verification.
+4. `AppHandlerV2` + ICS-20 v2, client-keyed escrow, `Ics20Withdrawal`
+   source client, `pcli --client`.
+5. Events with ibc-go names; atomic create-and-pair with the per-transaction
+   reset in the app.
+6. Tests: two real `Storage` chains, each holding a client for the other,
+   drive register → send → recv (ack written, app ran) → ack (commitment
+   deleted); failing app rolls back and writes the universal error ack;
+   replay, wrong counterparty, tampered packet, expired packet and forged
+   ack rejected; timeout via non-membership proof with the consensus
+   timestamp check both failing and passing; send window checks.
+
+Not done:
+
+- `LightClient` trait and Tendermint retrofit (§1). Needed before the
+  Eureka Ethereum client can be added; classic code is untouched so far.
+- Hermes fork `RelayPathV2` for a Penumbra endpoint, and the two-pd devnet
+  self-pairing run; then Penumbra ↔ a local ibc-go v10 simapp.
+- Genesis/params (`MAX_TIMEOUT_DELTA` is a constant, allowed client types
+  are still Tendermint-only), rpc queries for v2 state, `pcli view` of
+  client-routed withdrawals.
+- ABI codec for `application/x-solidity-abi` transfer payloads (phase 2).
 
 Open until phase 2: which Ethereum client to pair first (attestation vs
 SP1), prover hosting, and §6.

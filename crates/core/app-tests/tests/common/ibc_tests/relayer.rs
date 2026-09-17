@@ -49,7 +49,7 @@ use {
     penumbra_sdk_keys::keys::AddressIndex,
     penumbra_sdk_num::Amount,
     penumbra_sdk_proto::{util::tendermint_proxy::v1::GetBlockByHeightRequest, DomainType},
-    penumbra_sdk_shielded_pool::{Ics20Withdrawal, OutputPlan, SpendPlan},
+    penumbra_sdk_shielded_pool::{Ics20Withdrawal, Ics20WithdrawalSource, OutputPlan, SpendPlan},
     penumbra_sdk_stake::state_key::chain,
     penumbra_sdk_transaction::{
         memo::MemoPlaintext, plan::MemoPlan, TransactionParameters, TransactionPlan,
@@ -1482,7 +1482,7 @@ impl MockRelayer {
             return_address,
             // TODO: this is fine to hardcode for now but should ultimately move
             // to the mock relayer and be based on the handshake
-            source_channel: ChannelId::from_str("channel-0")?,
+            source: Ics20WithdrawalSource::Channel(ChannelId::from_str("channel-0")?),
             // Penumbra <-> Penumbra so false
             use_compat_address: false,
             use_transparent_address: false,

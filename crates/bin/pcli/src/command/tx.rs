@@ -71,7 +71,7 @@ use penumbra_sdk_proto::{
     view::v1::GasPricesRequest,
     Message, Name as _,
 };
-use penumbra_sdk_shielded_pool::Ics20Withdrawal;
+use penumbra_sdk_shielded_pool::{Ics20Withdrawal, Ics20WithdrawalSource};
 use penumbra_sdk_stake::{
     rate::RateData,
     validator::{self},
@@ -277,8 +277,15 @@ pub enum TxCmd {
         /// The IBC channel on the primary Penumbra chain to use for performing the withdrawal.
         /// This channel must already exist, as configured by a relayer client.
         /// You can search for channels via e.g. `pcli query ibc channel transfer 0`.
-        #[clap(long)]
-        channel: u64,
+        /// Exactly one of `--channel` and `--client` must be given.
+        #[clap(long, conflicts_with = "client", required_unless_present = "client")]
+        channel: Option<u64>,
+        /// The IBC v2 client on Penumbra to route the withdrawal over (client-routed
+        /// packets, no channel), e.g. `07-tendermint-3`. The client must have a
+        /// registered counterparty. Timeouts are given in nanoseconds like `--channel`
+        /// withdrawals but are truncated to seconds on the wire.
+        #[clap(long, conflicts_with = "channel", required_unless_present = "channel")]
+        client: Option<String>,
         /// Block height on the counterparty chain, after which the withdrawal will be considered
         /// invalid if not already relayed. Must be specified as a tuple of revision number and block
         /// height, e.g. `5-1000000` means "chain revision 5, block height of 1000000".
@@ -1169,6 +1176,7 @@ impl TxCmd {
                 timeout_height,
                 timeout_timestamp,
                 channel,
+                client,
                 source,
                 memo,
                 fee_tier,
@@ -1189,9 +1197,15 @@ impl TxCmd {
                         .0
                 };
 
-                let timeout_height = match timeout_height {
-                    Some(h) => h.clone(),
-                    None => {
+                let timeout_height = match (timeout_height, channel) {
+                    (Some(h), _) => h.clone(),
+                    // IBC v2 packets have no timeout height; the field is
+                    // ignored for client-routed withdrawals.
+                    (None, None) => IbcHeight {
+                        revision_number: 0,
+                        revision_height: 1,
+                    },
+                    (None, Some(channel)) => {
                         // look up the height for the counterparty and add 2 days of block time
                         // (assuming 10 seconds per block) to it
 
@@ -1292,8 +1306,13 @@ impl TxCmd {
                     timeout_height,
                     timeout_time: timeout_timestamp,
                     return_address: ephemeral_return_address,
-                    // TODO: impl From<u64> for ChannelId
-                    source_channel: ChannelId::from_str(format!("channel-{}", channel).as_ref())?,
+                    source: match (channel, client) {
+                        (Some(channel), None) => Ics20WithdrawalSource::Channel(
+                            ChannelId::from_str(&format!("channel-{channel}"))?,
+                        ),
+                        (None, Some(client)) => Ics20WithdrawalSource::Client(client.parse()?),
+                        _ => anyhow::bail!("specify exactly one of --channel and --client"),
+                    },
                     use_compat_address: false,
                     ics20_memo: memo.clone().unwrap_or_default(),
                     use_transparent_address: *use_transparent_address,

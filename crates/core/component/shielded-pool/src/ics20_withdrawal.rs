@@ -1,4 +1,6 @@
-use ibc_types::core::{channel::ChannelId, channel::PortId, client::Height as IbcHeight};
+use ibc_types::core::{
+    channel::ChannelId, channel::PortId, client::ClientId, client::Height as IbcHeight,
+};
 use penumbra_sdk_asset::{
     asset::{self, Metadata},
     Balance, Value,
@@ -15,6 +17,23 @@ use std::str::FromStr;
 
 #[cfg(feature = "component")]
 use penumbra_sdk_ibc::component::packet::{IBCPacket, Unchecked};
+
+/// Where an ICS-20 withdrawal leaves Penumbra: a classic IBC channel, or an
+/// IBC v2 client (client-routed packets, no channel).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Ics20WithdrawalSource {
+    Channel(ChannelId),
+    Client(ClientId),
+}
+
+impl std::fmt::Display for Ics20WithdrawalSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Ics20WithdrawalSource::Channel(c) => write!(f, "{c}"),
+            Ics20WithdrawalSource::Client(c) => write!(f, "{c}"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "pb::Ics20Withdrawal", into = "pb::Ics20Withdrawal")]
@@ -34,9 +53,10 @@ pub struct Ics20Withdrawal {
     // in its handling of validation of timeouts.
     pub timeout_height: IbcHeight,
     // the timestamp at which this transfer expires, in nanoseconds after unix epoch.
+    // For IBC v2 withdrawals this is truncated to seconds on the wire.
     pub timeout_time: u64,
-    // the source channel used for the withdrawal
-    pub source_channel: ChannelId,
+    // the source channel (classic) or client (IBC v2) used for the withdrawal
+    pub source: Ics20WithdrawalSource,
 
     // Whether to use a "compat" (bech32, non-m) address for the return address in the withdrawal,
     // for compatibility with chains that expect to be able to parse the return address as bech32.
@@ -50,20 +70,44 @@ pub struct Ics20Withdrawal {
     pub use_transparent_address: bool,
 }
 
-#[cfg(feature = "component")]
-impl From<Ics20Withdrawal> for IBCPacket<Unchecked> {
-    fn from(withdrawal: Ics20Withdrawal) -> Self {
-        Self::new(
-            PortId::transfer(),
-            withdrawal.source_channel.clone(),
-            withdrawal.timeout_height,
-            withdrawal.timeout_time,
-            withdrawal.packet_data(),
-        )
-    }
-}
-
 impl Ics20Withdrawal {
+    /// The classic (channel-routed) packet for this withdrawal, if it is one.
+    #[cfg(feature = "component")]
+    pub fn v1_packet(&self) -> Option<IBCPacket<Unchecked>> {
+        match &self.source {
+            Ics20WithdrawalSource::Channel(source_channel) => Some(IBCPacket::new(
+                PortId::transfer(),
+                source_channel.clone(),
+                self.timeout_height,
+                self.timeout_time,
+                self.packet_data(),
+            )),
+            Ics20WithdrawalSource::Client(_) => None,
+        }
+    }
+
+    /// The source channel, for classic withdrawals.
+    pub fn source_channel(&self) -> Option<&ChannelId> {
+        match &self.source {
+            Ics20WithdrawalSource::Channel(c) => Some(c),
+            Ics20WithdrawalSource::Client(_) => None,
+        }
+    }
+
+    /// The source client, for IBC v2 withdrawals.
+    pub fn source_client(&self) -> Option<&ClientId> {
+        match &self.source {
+            Ics20WithdrawalSource::Channel(_) => None,
+            Ics20WithdrawalSource::Client(c) => Some(c),
+        }
+    }
+
+    /// IBC v2 timeouts are unix seconds; `timeout_time` is nanoseconds and is
+    /// required to be minute-aligned, so this is exact.
+    pub fn timeout_time_seconds(&self) -> u64 {
+        self.timeout_time / 1_000_000_000
+    }
+
     pub fn value(&self) -> Value {
         Value {
             amount: self.amount,
@@ -117,6 +161,8 @@ impl DomainType for Ics20Withdrawal {
 #[allow(deprecated)]
 impl From<Ics20Withdrawal> for pb::Ics20Withdrawal {
     fn from(w: Ics20Withdrawal) -> Self {
+        let source_channel = w.source_channel().map(ToString::to_string).unwrap_or_default();
+        let source_client = w.source_client().map(ToString::to_string).unwrap_or_default();
         pb::Ics20Withdrawal {
             amount: Some(w.amount.into()),
             denom: Some(w.denom.base_denom().into()),
@@ -124,7 +170,8 @@ impl From<Ics20Withdrawal> for pb::Ics20Withdrawal {
             return_address: Some(w.return_address.into()),
             timeout_height: Some(w.timeout_height.into()),
             timeout_time: w.timeout_time,
-            source_channel: w.source_channel.to_string(),
+            source_channel,
+            source_client,
             use_compat_address: w.use_compat_address,
             ics20_memo: w.ics20_memo.to_string(),
             use_transparent_address: w.use_transparent_address,
@@ -157,7 +204,15 @@ impl TryFrom<pb::Ics20Withdrawal> for Ics20Withdrawal {
                 .ok_or_else(|| anyhow::anyhow!("missing timeout height"))?
                 .try_into()?,
             timeout_time: s.timeout_time,
-            source_channel: ChannelId::from_str(&s.source_channel)?,
+            source: match (s.source_channel.is_empty(), s.source_client.is_empty()) {
+                (false, true) => Ics20WithdrawalSource::Channel(ChannelId::from_str(&s.source_channel)?),
+                (true, false) => Ics20WithdrawalSource::Client(ClientId::from_str(&s.source_client)?),
+                (false, false) => anyhow::bail!(
+                    "ics20 withdrawal must set only one of source_channel and source_client"
+                ),
+                // Legacy: an empty source channel was accepted (and rejected at execution).
+                (true, true) => Ics20WithdrawalSource::Channel(ChannelId::from_str(&s.source_channel)?),
+            },
             use_compat_address: s.use_compat_address,
             ics20_memo: s.ics20_memo,
             use_transparent_address: s.use_transparent_address,

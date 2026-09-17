@@ -347,7 +347,7 @@ impl TransactionViewExt for TransactionView {
                         "{}{} via {} to {}",
                         unit.format_value(withdrawal.amount),
                         unit,
-                        withdrawal.source_channel,
+                        withdrawal.source,
                         withdrawal.destination_chain_address,
                     );
                     ["Ics20 Withdrawal", &action]

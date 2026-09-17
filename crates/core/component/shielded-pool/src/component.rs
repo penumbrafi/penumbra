@@ -8,6 +8,7 @@ mod metrics;
 mod note_manager;
 mod shielded_pool;
 mod transfer;
+mod transfer_v2;
 
 pub use self::metrics::register_metrics;
 pub use assets::{AssetRegistry, AssetRegistryRead};

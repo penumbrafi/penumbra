@@ -4,7 +4,7 @@
 pub mod component;
 
 pub mod ics20_withdrawal;
-pub use ics20_withdrawal::Ics20Withdrawal;
+pub use ics20_withdrawal::{Ics20Withdrawal, Ics20WithdrawalSource};
 
 pub mod event;
 pub mod fmd;

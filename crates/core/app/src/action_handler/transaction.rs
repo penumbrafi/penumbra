@@ -109,6 +109,11 @@ impl AppActionHandler for Transaction {
         // obtain a NoteSource we can cache for various actions.
         state.put_current_source(Some(self.id()));
 
+        // Reset transaction-scoped IBC state (the created-clients list that
+        // gates IBC v2 `RegisterCounterparty`). Ephemeral objects survive
+        // `StateDelta::apply` into the block, so this must run every tx.
+        penumbra_sdk_ibc::component::Ibc::begin_transaction(&mut state);
+
         // Check and record the transaction's fee payment,
         // before doing the rest of execution.
         let gas_used = self.gas_cost();
