@@ -66,14 +66,21 @@ jobs:
       # `--locked` uses each tool's own Cargo.lock, so an unrelated upstream
       # release cannot break this job.
       #
-      # mdbook is held at 0.4 on purpose. 0.5 drops config keys this repo's
-      # book.toml still sets (`multilingual`), and more importantly it changed
-      # the backend API that mdbook-linkcheck implements -- and `[output.linkcheck]`
-      # is what enforces link checking in docs/protocol. mdbook-linkcheck has had
-      # no release since 2023, so moving to 0.5 means dropping link checking.
-      # Upgrading the docs toolchain is a real piece of work, not a CI fix.
+      # The whole docs toolchain is held at its mdbook-0.4 generation, and the
+      # versions have to move together -- preprocessors and backends talk to
+      # mdbook over a JSON protocol that changed in 0.5:
+      #
+      #   mdbook          ^0.4  -- 0.5 rejects `multilingual` in book.toml
+      #   mdbook-katex    ^0.9  -- 0.10 speaks 0.5's format ("missing field `items`")
+      #   mdbook-mermaid  ^0.16 -- 0.16.2 depends on mdbook ^0.4.36; 0.17 dropped it
+      #   mdbook-linkcheck      -- no release since 2023, so 0.4-only
+      #
+      # `[output.linkcheck]` in docs/protocol/book.toml is what enforces link
+      # checking, and nothing in the 0.5 generation replaces it, so moving up
+      # would mean silently losing that. Upgrading the docs toolchain is a real
+      # piece of work; this keeps it building.
       - name: Install mdbook dependencies
-        run: cargo +stable install --locked mdbook@^0.4 mdbook-katex mdbook-mermaid mdbook-linkcheck
+        run: cargo +stable install --locked mdbook@^0.4 mdbook-katex@^0.9 mdbook-mermaid@^0.16 mdbook-linkcheck
 
       - name: Build protocol docs
         run: cd docs/protocol && mdbook build
