@@ -18,6 +18,7 @@ pub mod params;
 mod version;
 
 mod prefix;
+pub mod v2;
 pub use prefix::{MerklePrefixExt, IBC_COMMITMENT_PREFIX, IBC_PROOF_SPECS, IBC_SUBSTORE_PREFIX};
 
 pub use ibc_action::IbcRelay;

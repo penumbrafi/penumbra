@@ -9,7 +9,9 @@ use ibc_types::{
 use crate::component::{
     client::{ConsensusStateWriteExt as _, StateReadExt as _, StateWriteExt as _},
     client_counter::ClientCounter,
-    ics02_validation, HostInterface, MsgHandler,
+    ics02_validation,
+    v2::V2StateWriteExt as _,
+    HostInterface, MsgHandler,
 };
 
 #[async_trait]
@@ -58,6 +60,9 @@ impl MsgHandler for MsgCreateClient {
         // increment client counter
         let counter = state.client_counter().await.unwrap_or(ClientCounter(0));
         state.put_client_counter(ClientCounter(counter.0 + 1));
+
+        // Allow an IBC v2 `RegisterCounterparty` later in this same transaction.
+        state.mark_client_created_in_tx(client_id.clone());
 
         state.record(
             CreateClient {

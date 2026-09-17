@@ -29,4 +29,9 @@ pub mod ics20_value_balance {
     pub fn by_asset_id(channel_id: &ChannelId, asset_id: &asset::Id) -> String {
         format!("ibc/ics20-value-balance/{channel_id}/{asset_id}")
     }
+
+    /// IBC v2 escrow, keyed by the local client id the transfer was routed over.
+    pub fn by_client_id(client_id: &str, asset_id: &asset::Id) -> String {
+        format!("ibc/ics20-value-balance/v2/{client_id}/{asset_id}")
+    }
 }

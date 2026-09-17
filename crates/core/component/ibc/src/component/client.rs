@@ -584,6 +584,35 @@ mod tests {
     }
 
     #[async_trait]
+    impl crate::component::v2::AppHandlerV2 for MockAppHandler {
+        fn handles_port_v2(_port: &str) -> bool {
+            false
+        }
+        async fn recv_payload_v2<S: StateWrite>(
+            _state: S,
+            _packet: &crate::v2::Packet,
+            _payload: &crate::v2::Payload,
+        ) -> Result<Vec<u8>> {
+            anyhow::bail!("no v2 app")
+        }
+        async fn acknowledge_payload_v2<S: StateWrite>(
+            _state: S,
+            _packet: &crate::v2::Packet,
+            _payload: &crate::v2::Payload,
+            _ack: &[u8],
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn timeout_payload_v2<S: StateWrite>(
+            _state: S,
+            _packet: &crate::v2::Packet,
+            _payload: &crate::v2::Payload,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
     impl AppHandler for MockAppHandler {}
 
     // test that we can create and update a light client.

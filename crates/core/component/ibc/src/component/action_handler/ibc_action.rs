@@ -29,6 +29,10 @@ impl<AH: AppHandler, HI: HostInterface> IbcRelayWithHandlers<AH, HI> {
             IbcRelay::RecvPacket(msg) => msg.check_stateless::<AH>().await?,
             IbcRelay::Acknowledgement(msg) => msg.check_stateless::<AH>().await?,
             IbcRelay::Timeout(msg) => msg.check_stateless::<AH>().await?,
+            IbcRelay::RegisterCounterparty(msg) => msg.check_stateless::<AH>().await?,
+            IbcRelay::RecvPacketV2(msg) => msg.check_stateless::<AH>().await?,
+            IbcRelay::AcknowledgementV2(msg) => msg.check_stateless::<AH>().await?,
+            IbcRelay::TimeoutV2(msg) => msg.check_stateless::<AH>().await?,
             IbcRelay::Unknown(msg) => {
                 anyhow::bail!("unknown IBC message type: {}", msg.type_url)
             }
@@ -118,6 +122,22 @@ impl<AH: AppHandler, HI: HostInterface> IbcRelayWithHandlers<AH, HI> {
                 .try_execute::<S, AH, HI>(state)
                 .await
                 .context("failed to execute MsgTimeout")?,
+            IbcRelay::RegisterCounterparty(msg) => msg
+                .try_execute::<S, AH, HI>(state)
+                .await
+                .context("failed to execute MsgRegisterCounterparty")?,
+            IbcRelay::RecvPacketV2(msg) => msg
+                .try_execute::<S, AH, HI>(state)
+                .await
+                .context("failed to execute v2 MsgRecvPacket")?,
+            IbcRelay::AcknowledgementV2(msg) => msg
+                .try_execute::<S, AH, HI>(state)
+                .await
+                .context("failed to execute v2 MsgAcknowledgement")?,
+            IbcRelay::TimeoutV2(msg) => msg
+                .try_execute::<S, AH, HI>(state)
+                .await
+                .context("failed to execute v2 MsgTimeout")?,
             IbcRelay::Unknown(msg) => {
                 anyhow::bail!("unknown IBC message type: {}", msg.type_url)
             }

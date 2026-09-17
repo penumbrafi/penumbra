@@ -31,6 +31,8 @@ use ibc_types::core::{
 
 use ibc_types::DomainType as IbcTypesDomainType;
 
+use crate::v2::{self, proto as v2proto};
+
 use penumbra_sdk_proto::penumbra::core::component::ibc::v1::{self as pb};
 use penumbra_sdk_proto::{DomainType, Name};
 use penumbra_sdk_txhash::{EffectHash, EffectingData};
@@ -56,6 +58,14 @@ pub enum IbcRelay {
     RecvPacket(MsgRecvPacket),
     Acknowledgement(MsgAcknowledgement),
     Timeout(MsgTimeout),
+    /// IBC v2: pair a local client with a counterparty (`ibc.core.client.v2`).
+    RegisterCounterparty(v2::MsgRegisterCounterparty),
+    /// IBC v2 packet receive (`ibc.core.channel.v2.MsgRecvPacket`).
+    RecvPacketV2(v2::MsgRecvPacket),
+    /// IBC v2 acknowledgement (`ibc.core.channel.v2.MsgAcknowledgement`).
+    AcknowledgementV2(v2::MsgAcknowledgement),
+    /// IBC v2 timeout (`ibc.core.channel.v2.MsgTimeout`).
+    TimeoutV2(v2::MsgTimeout),
     Unknown(pbjson_types::Any),
 }
 
@@ -124,6 +134,18 @@ impl IbcRelay {
             }
             IbcRelay::Timeout(msg) => {
                 tracing::info_span!(parent: parent, "Timeout", chan_id = %msg.packet.chan_on_a, seq = %msg.packet.sequence)
+            }
+            IbcRelay::RegisterCounterparty(msg) => {
+                tracing::info_span!(parent: parent, "RegisterCounterparty", client_id = %msg.client_id)
+            }
+            IbcRelay::RecvPacketV2(msg) => {
+                tracing::info_span!(parent: parent, "RecvPacketV2", client_id = %msg.packet.destination_client, seq = %msg.packet.sequence)
+            }
+            IbcRelay::AcknowledgementV2(msg) => {
+                tracing::info_span!(parent: parent, "AcknowledgementV2", client_id = %msg.packet.source_client, seq = %msg.packet.sequence)
+            }
+            IbcRelay::TimeoutV2(msg) => {
+                tracing::info_span!(parent: parent, "TimeoutV2", client_id = %msg.packet.source_client, seq = %msg.packet.sequence)
             }
             IbcRelay::Unknown(_) => {
                 tracing::info_span!(parent: parent, "Unknown")
@@ -204,6 +226,18 @@ impl TryFrom<pb::IbcRelay> for IbcRelay {
         } else if action_type == RawMsgTimeout::type_url() {
             let msg = MsgTimeout::decode(raw_action_bytes)?;
             IbcRelay::Timeout(msg)
+        } else if action_type == v2proto::MsgRegisterCounterparty::type_url() {
+            let msg = v2::MsgRegisterCounterparty::decode(raw_action_bytes)?;
+            IbcRelay::RegisterCounterparty(msg)
+        } else if action_type == v2proto::MsgRecvPacket::type_url() {
+            let msg = v2::MsgRecvPacket::decode(raw_action_bytes)?;
+            IbcRelay::RecvPacketV2(msg)
+        } else if action_type == v2proto::MsgAcknowledgement::type_url() {
+            let msg = v2::MsgAcknowledgement::decode(raw_action_bytes)?;
+            IbcRelay::AcknowledgementV2(msg)
+        } else if action_type == v2proto::MsgTimeout::type_url() {
+            let msg = v2::MsgTimeout::decode(raw_action_bytes)?;
+            IbcRelay::TimeoutV2(msg)
         } else {
             IbcRelay::Unknown(raw_action)
         };
@@ -281,6 +315,22 @@ impl From<IbcRelay> for pb::IbcRelay {
             },
             IbcRelay::Timeout(msg) => pbjson_types::Any {
                 type_url: RawMsgTimeout::type_url(),
+                value: msg.encode_to_vec().into(),
+            },
+            IbcRelay::RegisterCounterparty(msg) => pbjson_types::Any {
+                type_url: v2proto::MsgRegisterCounterparty::type_url(),
+                value: msg.encode_to_vec().into(),
+            },
+            IbcRelay::RecvPacketV2(msg) => pbjson_types::Any {
+                type_url: v2proto::MsgRecvPacket::type_url(),
+                value: msg.encode_to_vec().into(),
+            },
+            IbcRelay::AcknowledgementV2(msg) => pbjson_types::Any {
+                type_url: v2proto::MsgAcknowledgement::type_url(),
+                value: msg.encode_to_vec().into(),
+            },
+            IbcRelay::TimeoutV2(msg) => pbjson_types::Any {
+                type_url: v2proto::MsgTimeout::type_url(),
                 value: msg.encode_to_vec().into(),
             },
             IbcRelay::Unknown(raw_action) => raw_action,

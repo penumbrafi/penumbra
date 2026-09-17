@@ -21,6 +21,7 @@ pub mod app_handler;
 pub mod ibc_action_with_handler;
 pub mod packet;
 pub mod state_key;
+pub mod v2;
 
 use msg_handler::MsgHandler;
 

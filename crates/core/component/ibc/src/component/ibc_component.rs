@@ -64,6 +64,14 @@ impl Ibc {
         state.put_penumbra_sdk_consensus_state(height, cs);
     }
 
+    /// Must be called at the start of every transaction, before any action
+    /// runs. It clears the transaction-scoped list of created clients that
+    /// gates IBC v2 `RegisterCounterparty` (see `component::v2`).
+    pub fn begin_transaction<S: StateWrite>(mut state: S) {
+        use crate::component::v2::V2StateWriteExt as _;
+        state.reset_clients_created_in_tx();
+    }
+
     #[instrument(name = "ibc", skip(_state, _end_block))]
     pub async fn end_block<S: StateWrite + 'static>(
         mut _state: &mut Arc<S>,

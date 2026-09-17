@@ -61,4 +61,4 @@ pub trait AppHandlerExecute: Send + Sync {
     ) -> Result<()>;
 }
 
-pub trait AppHandler: AppHandlerCheck + AppHandlerExecute {}
+pub trait AppHandler: AppHandlerCheck + AppHandlerExecute + crate::component::v2::AppHandlerV2 {}

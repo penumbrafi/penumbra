@@ -30,7 +30,7 @@ pub(crate) trait MsgHandler {
     async fn check_stateless<AH: AppHandlerCheck>(&self) -> Result<()>;
     async fn try_execute<
         S: StateWrite,
-        AH: AppHandlerCheck + AppHandlerExecute,
+        AH: AppHandlerCheck + AppHandlerExecute + crate::component::v2::AppHandlerV2,
         HI: HostInterface,
     >(
         &self,
