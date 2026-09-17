@@ -243,7 +243,7 @@ getrandom                        = { version = "0.2", default-features = false }
 # as 0.83.2 on branch release/v0.83.x, tag v0.83.2 (pruning commits, SubstoreConfig
 # fix, the snapshot-cache refresh after `commit_in_place`, and pruning that
 # preserves read-path values where a merkle leaf and its value row disagree).
-cnidarium = { git = "https://github.com/penumbrafi/cnidarium", branch = "feat/prune-unverified-mode" }
+cnidarium = { git = "https://github.com/penumbrafi/cnidarium", rev = "23acd003f0271f2eba1770c92205e6bac21c96a3" }
 # Without this, the git dependency for ledger-lib will depend on the crates.io v0.1 version,
 # and will fail to build.
 ledger-proto = { git = "https://github.com/ledger-community/rust-ledger", rev = "510bb3ca30639af4bdb12a918b6bbbdb75fa5f52" }
