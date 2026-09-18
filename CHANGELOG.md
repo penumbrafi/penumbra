@@ -1,5 +1,42 @@
 # Changelog
 
+## 2.0.14 (unreleased)
+
+More operator ergonomics for `pd migrate prune`. No consensus change;
+drop-in for a running 2.0.13 node. Motivated by the Rotko Sep-2026
+mainnet prune, which sat at ~26 000 keys/min for 15+ hours on a mature
+40 M-key tree while the 2.0.13 preflight kept reporting a 50-minute ETA.
+
+- Preflight recalibration. The per-key cost constants are now measured
+  against a mature-tree run (~2.3 ms/key `--unverified` steady state,
+  ~7 ms/key `Verified`), not a fresh post-restart tree. Preflight also
+  computes a **shadow factor** — the ratio of on-disk footprint to
+  estimated live-key surface — by sampling `substore--jmt-values` for
+  the average leaf size and dividing the CF footprint. Clamped to
+  `[1.0, 5.0]` and applied to the ETA, so mature-tree reports land in
+  the 8–12 h band instead of the 50 min band. The mature-tree measurement
+  used chunk_size 500 000 on modern NVMe/32 GB metal.
+- Preflight now reflects the mode selected on the CLI. Previously
+  `--unverified` was decoded in `main.rs` after preflight ran, so the
+  report always printed `mode=Verified`. `Preflight::collect` now takes
+  `PruneMode` and prints the right label. Per-key ETA also picks the
+  right constant off the mode.
+- Live-node detection rewritten. The old LOCK-file heuristic returned
+  false-negatives while pd was running (pd writes a zero-byte top-level
+  `LOCK` and keeps its real lock inside a rocksdb-managed subdir). We
+  now probe TCP `127.0.0.1:8080` (pd gRPC) and `127.0.0.1:26657`
+  (CometBFT RPC) — either connecting flags the node as live.
+- New `--compact-source` flag. Before the pruner opens the source for
+  the walk, run RocksDB `compact_range` on every column family in place.
+  Collapses shadowed version-delta SSTs so the walk iterator hits fewer,
+  larger, coalesced files; empirical 2–3× walk speedup on trees with
+  heavy shadowed history. Off by default. Refuses to run if the
+  live-node probe fires — compacting an open RocksDB corrupts the tree.
+  Requires the paired `--i-understand-source-compaction-modifies-source`
+  confirmation flag (mirrors the `--unverified` pattern): compaction
+  rewrites SSTs, so an interrupted prune leaves the source no longer
+  bit-identical to its pre-run state.
+
 ## 2.0.13
 
 Operator ergonomics for `pd migrate prune`. No consensus change; drop-in for
