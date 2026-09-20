@@ -13,7 +13,11 @@ path = "src/main.rs"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
-osst = { git = "https://github.com/rotkonetworks/frostito.git", features = ["pallas"] }
+# TODO: repoint at https://github.com/penumbrafi/frostito (osst 0.2.0: nested v2
+# binding fix, pasta-1.0 pallas backend, Orchard spend-auth backend) once that
+# repo is published; it did not exist as of 2026-09-20. Pinned to the rev this
+# code was written against until then.
+osst = { git = "https://github.com/rotkonetworks/frostito.git", rev = "ae5b415e5cb7fc08a588f34b4edcd84fa67ccc8e", features = ["pallas"] }
 pasta_curves = "0.5"
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.12", features = ["json"] }

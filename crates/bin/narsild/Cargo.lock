@@ -1057,7 +1057,7 @@ dependencies = [
 [[package]]
 name = "osst"
 version = "0.1.1"
-source = "git+https://github.com/rotkonetworks/frostito.git#ae5b415e5cb7fc08a588f34b4edcd84fa67ccc8e"
+source = "git+https://github.com/rotkonetworks/frostito.git?rev=ae5b415e5cb7fc08a588f34b4edcd84fa67ccc8e#ae5b415e5cb7fc08a588f34b4edcd84fa67ccc8e"
 dependencies = [
  "blake2b_simd",
  "curve25519-dalek",
