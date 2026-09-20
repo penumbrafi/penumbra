@@ -299,7 +299,17 @@ impl DkgCeremony {
             let subs = self.subshares.get(&j).unwrap();
             let comms = self.commitments.get(&j).unwrap();
 
-            let mut agg: dkg::Aggregator<PallasPoint> = dkg::Aggregator::new(self.holder_index);
+            // osst 0.2 takes the dealer set explicitly; the dealers that
+            // actually delivered for this coefficient are exactly the keys of
+            // `subs`, which is what the subset-of-validators DKG needs.
+            let dealer_set: Vec<u32> = {
+                let mut v: Vec<u32> = subs.keys().copied().collect();
+                v.sort_unstable();
+                v
+            };
+            let mut agg: dkg::Aggregator<PallasPoint> =
+                dkg::Aggregator::new(self.holder_index, &dealer_set)
+                    .map_err(|e| format!("aggregator init error: {:?}", e))?;
             for (&dealer_idx, scalar) in subs {
                 let commitment = comms.get(&dealer_idx).unwrap();
                 let subshare = osst::reshare::SubShare::new(dealer_idx, self.holder_index, *scalar);
@@ -307,13 +317,16 @@ impl DkgCeremony {
                     .map_err(|e| format!("aggregation error: {:?}", e))?;
             }
 
-            let num_dealers = if self.actual_dealers > 0 { self.actual_dealers } else { self.inner_n };
-            let share = agg.finalize(num_dealers)
+            let share = agg.finalize()
                 .map_err(|e| format!("finalize error: {:?}", e))?;
             coefficient_shares.push(hex::encode(share.to_repr().as_ref()));
 
             // coefficient commitment: g^{a_j} = Σ_k g^{f_k(0)}
-            coeff_commitments.push(hex::encode(agg.derive_group_key().compress()));
+            coeff_commitments.push(hex::encode(
+                agg.derive_group_key()
+                    .map_err(|e| format!("group key error: {:?}", e))?
+                    .compress(),
+            ));
         }
 
         let result = DkgResult {

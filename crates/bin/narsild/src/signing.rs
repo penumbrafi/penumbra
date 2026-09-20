@@ -89,8 +89,8 @@ impl LocalSigner {
     /// generate nonce commitment for round 1
     pub fn commit(&mut self, session_id: [u8; 32]) -> InnerCommitment {
         let mut rng = rand_core::OsRng;
-        let d = Scalar::random(&mut rng);
-        let e = Scalar::random(&mut rng);
+        let d = crate::random_scalar(&mut rng);
+        let e = crate::random_scalar(&mut rng);
         let hiding: [u8; 32] = (Point::generator() * d).to_bytes().into();
         let binding: [u8; 32] = (Point::generator() * e).to_bytes().into();
         self.nonces.insert(session_id, (d, e));

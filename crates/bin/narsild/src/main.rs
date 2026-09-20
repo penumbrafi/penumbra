@@ -22,10 +22,26 @@ use signing::{SigningService, InnerCommitment, InnerShare};
 use axum::{Router, extract::State, response::IntoResponse, Json};
 use clap::Parser;
 use pasta_curves::pallas::Scalar;
-use pasta_curves::group::ff::{Field, PrimeField};
+use pasta_curves::group::ff::{FromUniformBytes, PrimeField};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+// ---------------------------------------------------------------------------
+// RNG helper
+// ---------------------------------------------------------------------------
+
+/// Sample a uniform Pallas scalar from a rand_core 0.6 RNG.
+///
+/// `ff` 0.14 (which osst 0.2's pallas backend pulls in) moved `Field::random`
+/// onto rand_core 0.10's `Rng` trait, which our rand_core 0.6 `OsRng` does not
+/// implement. Sample 64 uniform bytes and reduce, exactly as osst does
+/// internally, so both sides agree on the distribution.
+pub fn random_scalar<R: rand_core::RngCore + rand_core::CryptoRng>(rng: &mut R) -> Scalar {
+    let mut bytes = [0u8; 64];
+    rng.fill_bytes(&mut bytes);
+    <Scalar as FromUniformBytes<64>>::from_uniform_bytes(&bytes)
+}
 
 // ---------------------------------------------------------------------------
 // Request/response types (JSON wire format)
@@ -519,7 +535,7 @@ async fn main() {
     let holder_index = node_index + 1; // 1-indexed
 
     // In production: loaded from DKG output
-    let share_scalar = Scalar::random(&mut rand_core::OsRng);
+    let share_scalar = random_scalar(&mut rand_core::OsRng);
 
     let peers = PeerSet::new(cli.peers);
     let peers_clone = peers.clone();
