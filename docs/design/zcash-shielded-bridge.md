@@ -123,7 +123,7 @@ cost and should be stated plainly rather than hidden.
 | --- | --- |
 | `narsild` sidecar | Prototype: DKG, two-round nested signing, peer broadcast, HTTP API. No persistence, no auth, no epoch binding. Branch `narsild`. |
 | Token factory | Component, protos, pcli support, governance-gated and dormant by default, app version 13. Open for review as `feature/token-factory` (PR #2). |
-| `osst` (frostito) | Nested FROST v2, DKG, key-preserving proactive reshare, RedPallas. Canonical home is `github.com/penumbrafi/frostito`; the copies vendored in `zcli` and `zk.poker` are being removed. Unaudited. |
+| `osst` (frostito) | Nested FROST v2, DKG, key-preserving proactive reshare, RedPallas. Canonical home is `github.com/penumbrafi/frostito` (crate `osst` 0.2.0, the rev `narsild` pins); the copies vendored in `zcli` and `zk.poker` are being removed. Unaudited. |
 | ZIP-302 memo codec | Implemented in `zcli`'s `frost-spend::memo_codec`, with typed and fragmented memos and DKG-over-memo transport. |
 | Zafu wallet | Consumes the same memo and FROST stack; the natural depositor-side UX. |
 
