@@ -1079,8 +1079,8 @@ dependencies = [
 
 [[package]]
 name = "osst"
-version = "0.2.0"
-source = "git+https://github.com/penumbrafi/frostito?rev=20ff2e37a488a54e0b0b581b0c9c4af566290de6#20ff2e37a488a54e0b0b581b0c9c4af566290de6"
+version = "0.3.0"
+source = "git+https://github.com/penumbrafi/frostito?rev=cbe7797a05892a8b184480a57a1cc11f5d430265#cbe7797a05892a8b184480a57a1cc11f5d430265"
 dependencies = [
  "blake2b_simd",
  "rand_core 0.6.4",

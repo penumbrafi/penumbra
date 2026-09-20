@@ -22,7 +22,7 @@ use signing::{SigningService, InnerCommitment, InnerShare};
 use axum::{Router, extract::State, response::IntoResponse, Json};
 use clap::Parser;
 use pasta_curves::pallas::Scalar;
-use pasta_curves::group::ff::{FromUniformBytes, PrimeField};
+use pasta_curves::group::ff::PrimeField;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -33,14 +33,13 @@ use tokio::sync::Mutex;
 
 /// Sample a uniform Pallas scalar from a rand_core 0.6 RNG.
 ///
-/// `ff` 0.14 (which osst 0.2's pallas backend pulls in) moved `Field::random`
+/// Delegates to osst, which owns this bridge: `ff` 0.14 moved `Field::random`
 /// onto rand_core 0.10's `Rng` trait, which our rand_core 0.6 `OsRng` does not
-/// implement. Sample 64 uniform bytes and reduce, exactly as osst does
-/// internally, so both sides agree on the distribution.
+/// implement, so osst samples 64 uniform bytes and reduces. Calling its helper
+/// rather than repeating the construction here keeps both sides on one
+/// definition of the distribution.
 pub fn random_scalar<R: rand_core::RngCore + rand_core::CryptoRng>(rng: &mut R) -> Scalar {
-    let mut bytes = [0u8; 64];
-    rng.fill_bytes(&mut bytes);
-    <Scalar as FromUniformBytes<64>>::from_uniform_bytes(&bytes)
+    osst::random_scalar(rng)
 }
 
 // ---------------------------------------------------------------------------
