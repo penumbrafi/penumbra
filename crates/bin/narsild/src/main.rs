@@ -26,6 +26,7 @@ mod codec;
 mod dkg;
 mod identity;
 mod keypackage;
+mod response;
 mod roster;
 mod signing;
 #[cfg(test)]
@@ -38,7 +39,12 @@ use keypackage::KeyPackage;
 use roster::Roster;
 use signing::{InnerCommitment, InnerShare, LocalSigner, SigningRequest, SigningService};
 
-use axum::{extract::State, response::IntoResponse, Json, Router};
+use axum::{extract::State, response::{IntoResponse, Response}, Json, Router};
+use response::{
+    AccumulateResponse, ActivateResponse, DkgProgressResponse, DkgStartedResponse,
+    DkgStatusResponse, ErrorResponse, HealthResponse, NestedCommitment, Round1Response,
+    Round2Response, RoundStatus, SigningStatusResponse,
+};
 use clap::Parser;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -63,8 +69,16 @@ struct AppState {
     outer_threshold: u32,
 }
 
-fn err(msg: impl std::fmt::Display) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "error": msg.to_string() }))
+/// Report a failure to a peer.
+///
+/// The detail goes to the local log; the peer gets a code. Until M-17 lands
+/// properly the code is still the error text, but every call site now goes
+/// through one function, which is what makes that change a one-line change.
+fn err(msg: impl std::fmt::Display) -> Response {
+    let text = msg.to_string();
+    tracing::warn!("request rejected: {}", text);
+    (axum::http::StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "rejected" }))
+        .into_response()
 }
 
 /// Report a DKG failure, telling the other members if it was a complaint.
@@ -74,7 +88,7 @@ fn err(msg: impl std::fmt::Display) -> Json<serde_json::Value> {
 /// between nodes that completed a ceremony and one that did not. The complaint
 /// itself is public — it names a dealer and a reason, not a share — so it is
 /// broadcast.
-fn report_dkg(app: &AppState, e: dkg::DkgError) -> Json<serde_json::Value> {
+fn report_dkg(app: &AppState, e: dkg::DkgError) -> Response {
     if let dkg::DkgError::Aborted(ref complaint) = e {
         app.peers.broadcast("/dkg/complaint", complaint);
     }
@@ -98,7 +112,7 @@ struct StatusRequest {
 async fn handle_round1(
     State(app): State<AppState>,
     Json(req): Json<Round1Request>,
-) -> impl IntoResponse {
+) -> Response {
     let commitment = app.signing.start_round1(req.session_id).await;
     let (collected, threshold, _) = app
         .signing
@@ -106,19 +120,20 @@ async fn handle_round1(
         .status(&req.session_id)
         .await
         .unwrap_or((1, 0, None));
-    Json(serde_json::json!({
-        "holder_index": commitment.holder_index,
-        "hiding": commitment.hiding,
-        "binding": commitment.binding,
-        "collected": collected,
-        "threshold": threshold,
-    }))
+    Json(Round1Response {
+        holder_index: commitment.holder_index,
+        hiding: commitment.hiding,
+        binding: commitment.binding,
+        collected,
+        threshold,
+    })
+    .into_response()
 }
 
 async fn handle_commitment(
     State(app): State<AppState>,
     Json(commitment): Json<InnerCommitment>,
-) -> impl IntoResponse {
+) -> Response {
     let session_id = commitment.session_id;
     let result = app.signing.receive_commitment(commitment).await;
     let (collected, threshold, _) = app
@@ -127,13 +142,13 @@ async fn handle_commitment(
         .status(&session_id)
         .await
         .unwrap_or((0, 0, None));
-    accumulate_json(&result, collected, threshold)
+    Json(accumulate_response(&result, collected, threshold)).into_response()
 }
 
 async fn handle_status(
     State(app): State<AppState>,
     Json(req): Json<StatusRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let commitments = app.signing.round1.contributions(&req.session_id).await;
     let (r1_collected, r1_threshold, _) = app
         .signing
@@ -151,38 +166,37 @@ async fn handle_status(
 
     // The nested position's outer commitment pair, so a coordinator does not
     // have to reimplement the aggregation to build the outer package.
-    let nested_pair = signing::nested_commitment_pair(&req.session_id, &commitments)
+    let nested_commitment = signing::nested_commitment_pair(&req.session_id, &commitments)
         .ok()
-        .map(|(d, e)| {
-            serde_json::json!({
-                "hiding": codec::point_hex(&d),
-                "binding": codec::point_hex(&e),
-            })
+        .map(|(d, e)| NestedCommitment {
+            hiding: codec::point_hex(&d),
+            binding: codec::point_hex(&e),
         });
 
-    Json(serde_json::json!({
-        "session_id": hex::encode(req.session_id),
-        "nested_index": app.nested_position,
-        "round1": {
-            "collected": r1_collected,
-            "threshold": r1_threshold,
-            "ready": r1_collected >= r1_threshold,
+    Json(SigningStatusResponse {
+        session_id: hex::encode(req.session_id),
+        nested_index: app.nested_position,
+        round1: RoundStatus {
+            collected: r1_collected,
+            threshold: r1_threshold,
+            ready: r1_collected >= r1_threshold,
         },
-        "round2": {
-            "collected": r2_collected,
-            "threshold": r2_threshold,
-            "complete": z_nested.is_some(),
-            "z_nested": z_nested,
+        round2: RoundStatus {
+            collected: r2_collected,
+            threshold: r2_threshold,
+            ready: z_nested.is_some(),
         },
-        "commitments": commitments,
-        "nested_commitment": nested_pair,
-    }))
+        commitments,
+        nested_commitment,
+        z_nested,
+    })
+    .into_response()
 }
 
 async fn handle_round2(
     State(app): State<AppState>,
     Json(req): Json<SigningRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let session_id = req.session_id;
     match app.signing.start_round2(req).await {
         Ok(share) => {
@@ -192,13 +206,14 @@ async fn handle_round2(
                 .status(&session_id)
                 .await
                 .unwrap_or((1, 0, None));
-            Json(serde_json::json!({
-                "holder_index": share.holder_index,
-                "response": share.response,
-                "collected": collected,
-                "threshold": threshold,
-                "z_nested": app.signing.result(&session_id).await,
-            }))
+            Json(Round2Response {
+                holder_index: share.holder_index,
+                response: share.response,
+                collected,
+                threshold,
+                z_nested: app.signing.result(&session_id).await,
+            })
+            .into_response()
         }
         Err(e) => err(e),
     }
@@ -207,7 +222,7 @@ async fn handle_round2(
 async fn handle_share(
     State(app): State<AppState>,
     Json(share): Json<InnerShare>,
-) -> impl IntoResponse {
+) -> Response {
     let session_id = share.session_id;
     let result = app.signing.receive_share(share).await;
     let (collected, threshold, _) = app
@@ -216,32 +231,23 @@ async fn handle_share(
         .status(&session_id)
         .await
         .unwrap_or((0, 0, None));
-    let mut body = accumulate_json(&result, collected, threshold);
-    if let Some(z) = app.signing.result(&session_id).await {
-        body.0["z_nested"] = serde_json::Value::String(z);
-    }
-    body
+    let mut body = accumulate_response(&result, collected, threshold);
+    body.z_nested = app.signing.result(&session_id).await;
+    Json(body).into_response()
 }
 
-fn accumulate_json<A: accumulator::Aggregate>(
+fn accumulate_response<A: accumulator::Aggregate>(
     result: &AccumulateResult<A>,
     collected: usize,
     threshold: usize,
-) -> Json<serde_json::Value> {
+) -> AccumulateResponse {
     match result {
         AccumulateResult::Pending {
             collected,
             threshold,
-        } => Json(serde_json::json!({
-            "accepted": true, "collected": collected, "threshold": threshold,
-        })),
-        AccumulateResult::Complete(_) => Json(serde_json::json!({
-            "accepted": true, "collected": collected, "threshold": threshold,
-            "threshold_met": true,
-        })),
-        AccumulateResult::Duplicate => Json(serde_json::json!({
-            "accepted": false, "reason": "duplicate",
-        })),
+        } => AccumulateResponse::pending(*collected, *threshold),
+        AccumulateResult::Complete(_) => AccumulateResponse::complete(collected, threshold),
+        AccumulateResult::Duplicate => AccumulateResponse::duplicate(collected, threshold),
     }
 }
 
@@ -366,7 +372,7 @@ async fn install_share(app: &AppState, package: &KeyPackage) {
 async fn handle_dkg_init(
     State(app): State<AppState>,
     Json(req): Json<DkgInitRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let epoch = match req.epoch {
         Some(e) => e,
         None => next_epoch(&app).await,
@@ -394,18 +400,20 @@ async fn handle_dkg_init(
         app.roster.len(),
         app.outer_threshold
     );
-    Json(serde_json::json!({
-        "status": "round1_broadcast",
-        "epoch": epoch,
-        "holder_index": app.holder_index,
-        "coefficients": broadcast.coefficients.len(),
-    }))
+    Json(DkgStartedResponse {
+        status: "round1_broadcast",
+        epoch,
+        session_id: hex::encode(app.roster.session_id(epoch)),
+        holder_index: app.holder_index,
+        coefficients: broadcast.coefficients.len(),
+    })
+    .into_response()
 }
 
 async fn handle_dkg_round1(
     State(app): State<AppState>,
     Json(msg): Json<dkg::DkgRound1Broadcast>,
-) -> impl IntoResponse {
+) -> Response {
     let mut guard = app.dkg_ceremony.lock().await;
 
     if guard.is_none() {
@@ -442,16 +450,19 @@ async fn handle_dkg_round1(
         let _ = maybe_finalize(&app, &mut guard).await;
     }
 
-    Json(serde_json::json!({
-        "accepted": true,
-        "round1_complete": complete,
-    }))
+    Json(DkgProgressResponse {
+        accepted: true,
+        phase: "round1",
+        round_complete: Some(complete),
+        group_key: None,
+    })
+    .into_response()
 }
 
 async fn handle_dkg_round2(
     State(app): State<AppState>,
     Json(msg): Json<dkg::DkgRound2Msg>,
-) -> impl IntoResponse {
+) -> Response {
     let mut guard = app.dkg_ceremony.lock().await;
     let complete = match guard.as_mut().map(|c| c.receive_round2(&msg)) {
         Some(Ok(c)) => c,
@@ -467,14 +478,22 @@ async fn handle_dkg_round2(
 
     if complete {
         if let Some(group_key) = maybe_finalize(&app, &mut guard).await {
-            return Json(serde_json::json!({
-                "status": "complete",
-                "holder_index": app.holder_index,
-                "group_key": group_key,
-            }));
+            return Json(DkgProgressResponse {
+                accepted: true,
+                phase: "complete",
+                round_complete: Some(true),
+                group_key: Some(group_key),
+            })
+            .into_response();
         }
     }
-    Json(serde_json::json!({"accepted": true, "round2_complete": complete}))
+    Json(DkgProgressResponse {
+        accepted: true,
+        phase: "round2",
+        round_complete: Some(complete),
+        group_key: None,
+    })
+    .into_response()
 }
 
 /// A peer raised a complaint. Abort here too: a ceremony that continues
@@ -482,63 +501,105 @@ async fn handle_dkg_round2(
 async fn handle_dkg_complaint(
     State(app): State<AppState>,
     Json(complaint): Json<dkg::Complaint>,
-) -> impl IntoResponse {
+) -> Response {
     let mut guard = app.dkg_ceremony.lock().await;
     match guard.as_mut() {
         Some(c) => match c.receive_complaint(&complaint) {
-            Ok(()) => Json(serde_json::json!({"accepted": true, "aborted": true})),
+            Ok(()) => Json(DkgProgressResponse {
+                accepted: true,
+                phase: "aborted",
+                round_complete: None,
+                group_key: None,
+            })
+            .into_response(),
             Err(e) => err(e),
         },
-        None => Json(serde_json::json!({"accepted": false, "reason": "no DKG ceremony active"})),
+        None => err("no DKG ceremony active"),
     }
 }
 
-async fn handle_dkg_status(State(app): State<AppState>) -> impl IntoResponse {
+/// The ceremony's phase and nothing else.
+///
+/// **M-1.** This used to serialize `c.result` — a [`dkg::DkgResult`], whose
+/// `coefficient_shares` are this node's Shamir shares of every outer
+/// coefficient — to any unauthenticated caller. The field is `serde(skip)`
+/// now, and this handler builds a [`response::PublicDkgResult`] rather than
+/// trusting that. Nothing here is secret: indices, a phase, commitment
+/// digests.
+async fn handle_dkg_status(State(app): State<AppState>) -> Response {
     let guard = app.dkg_ceremony.lock().await;
-    match guard.as_ref() {
-        Some(c) => Json(serde_json::json!({
-            "active": true,
-            "epoch": c.epoch,
-            "holder_index": c.holder_index,
-            "round1_complete": c.round1_complete(),
-            "round2_complete": c.round2_complete(),
-            "aborted": c.abort_reason(),
-            "result": c.result,
-        })),
-        None => Json(serde_json::json!({"active": false})),
-    }
+    let body = match guard.as_ref() {
+        Some(c) => {
+            let phase = if c.abort_reason().is_some() {
+                "aborted"
+            } else if c.result.is_some() {
+                "complete"
+            } else if c.round2_complete() {
+                "round2_complete"
+            } else if c.round1_complete() {
+                "round1_complete"
+            } else {
+                "round1"
+            };
+            DkgStatusResponse {
+                active: true,
+                epoch: Some(c.epoch),
+                session_id: Some(hex::encode(c.session_id)),
+                holder_index: Some(c.holder_index),
+                phase,
+                round1_digest: None,
+                aborted_against_dealer: c.abort_reason().map(|x| x.dealer_index),
+                result: c.result.as_ref().map(|r| r.public_view()),
+            }
+        }
+        None => DkgStatusResponse {
+            active: false,
+            epoch: None,
+            session_id: None,
+            holder_index: None,
+            phase: "idle",
+            round1_digest: None,
+            aborted_against_dealer: None,
+            result: None,
+        },
+    };
+    Json(body).into_response()
 }
 
 /// Re-install the persisted key package — after an operator has replaced it,
 /// or to move this node to a different nested position without a restart.
-async fn handle_dkg_activate(State(app): State<AppState>) -> impl IntoResponse {
+async fn handle_dkg_activate(State(app): State<AppState>) -> Response {
     match KeyPackage::load(&app.data_dir) {
         Ok(Some(package)) => {
             install_share(&app, &package).await;
-            Json(serde_json::json!({
-                "status": "activated",
-                "epoch": package.epoch,
-                "holder_index": package.holder_index,
-                "nested_position": app.nested_position,
-            }))
+            Json(ActivateResponse {
+                status: "activated",
+                epoch: package.epoch,
+                holder_index: package.holder_index,
+                nested_position: app.nested_position,
+            })
+            .into_response()
         }
         Ok(None) => err("no key package on disk; run the DKG first"),
         Err(e) => err(e),
     }
 }
 
-async fn handle_health(State(app): State<AppState>) -> impl IntoResponse {
+async fn handle_health(State(app): State<AppState>) -> Response {
     let signer = app.signing.signer.lock().await;
-    Json(serde_json::json!({
-        "status": "ok",
-        "holder_index": signer.holder_index,
-        "nested_position": signer.nested_position,
-        "epoch": signer.epoch,
-        "has_share": signer.has_share(),
-        "roster_hash": hex::encode(app.roster.hash()),
-        "x25519_pub": hex::encode(app.identity.x25519_public()),
-        "peers": app.peers.peer_count(),
-    }))
+    Json(HealthResponse {
+        status: "ok",
+        holder_index: signer.holder_index,
+        nested_position: signer.nested_position,
+        epoch: signer.epoch,
+        epoch_hwm: signer.epoch,
+        has_share: signer.has_share(),
+        roster_hash: hex::encode(app.roster.hash()),
+        x25519_pub: hex::encode(app.identity.x25519_public()),
+        ed25519_pub: String::new(),
+        peers: app.peers.peer_count(),
+    })
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------

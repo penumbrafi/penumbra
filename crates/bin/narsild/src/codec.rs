@@ -38,6 +38,25 @@ pub fn scalar_from_hex(s: &str) -> Option<PallasScalar> {
     PallasScalar::from_canonical_bytes(&arr)
 }
 
+/// Serde for a `[u8; 32]` as a hex string, so a session id or a digest reads
+/// the same on the wire as everything else here.
+pub mod bytes32 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(v))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
+        let s = String::deserialize(d)?;
+        let bytes = hex::decode(&s).map_err(serde::de::Error::custom)?;
+        bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("expected 32 bytes"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

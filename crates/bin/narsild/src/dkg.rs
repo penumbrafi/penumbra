@@ -55,6 +55,7 @@ use osst::OsstError;
 use pasta_curves::pallas::Point as PallasPoint;
 use pasta_curves::pallas::Scalar as PallasScalar;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -139,8 +140,19 @@ pub struct Complaint {
 pub struct DkgResult {
     pub holder_index: u32,
     pub epoch: u64,
+    /// This ceremony's session id — see [`crate::roster::Roster::session_id`].
+    #[serde(with = "crate::codec::bytes32")]
+    pub session_id: [u8; 32],
     pub roster_hash: String,
     /// Shamir share of each outer coefficient, hex scalars.
+    ///
+    /// **M-1**: `skip`, not merely "do not put this in a handler". This is the
+    /// group signing key in `t` pieces; `/dkg/status` used to serialize the
+    /// whole struct, and the fix that survives the next handler is the one
+    /// that makes the field unserializable rather than the one that remembers
+    /// not to serialize it. [`crate::response::PublicDkgResult`] is the type a
+    /// status page may carry.
+    #[serde(skip)]
     pub coefficient_shares: Vec<String>,
     /// `g^{a_j}` for each outer coefficient, hex points. Same on every node.
     pub coeff_commitments: Vec<String>,
@@ -154,6 +166,30 @@ pub struct DkgResult {
 }
 
 impl DkgResult {
+    /// The public half: what a status page may report.
+    pub fn public_view(&self) -> crate::response::PublicDkgResult {
+        let mut h = Sha256::new();
+        h.update(b"narsild/verification-shares/v1");
+        h.update((self.verification_shares.len() as u64).to_le_bytes());
+        for coeff in &self.verification_shares {
+            h.update((coeff.len() as u64).to_le_bytes());
+            for point in coeff {
+                h.update((point.len() as u64).to_le_bytes());
+                h.update(point.as_bytes());
+            }
+        }
+        crate::response::PublicDkgResult {
+            holder_index: self.holder_index,
+            epoch: self.epoch,
+            roster_hash: self.roster_hash.clone(),
+            coeff_commitments: self.coeff_commitments.clone(),
+            verification_share_digest: hex::encode(h.finalize()),
+            inner_threshold: self.inner_threshold,
+            inner_n: self.inner_n,
+            outer_threshold: self.outer_threshold,
+        }
+    }
+
     /// Persistable form.
     pub fn key_package(&self) -> KeyPackage {
         KeyPackage {
@@ -242,6 +278,8 @@ pub struct DkgCeremony {
     pub inner_n: u32,
     pub inner_t: u32,
     pub outer_t: u32,
+    /// This ceremony's session id.
+    pub session_id: [u8; 32],
     roster: Arc<Roster>,
     roster_hash_hex: String,
     sealed_roster: SealedRoster,
@@ -300,6 +338,7 @@ impl DkgCeremony {
             inner_n: n,
             inner_t,
             outer_t,
+            session_id: roster.session_id(epoch),
             roster_hash_hex: hex::encode(roster.hash()),
             sealed_roster: roster.sealed_roster(epoch)?,
             roster,
@@ -674,6 +713,7 @@ impl DkgCeremony {
         let result = DkgResult {
             holder_index: self.holder_index,
             epoch: self.epoch,
+            session_id: self.session_id,
             roster_hash: self.roster_hash_hex.clone(),
             coefficient_shares,
             coeff_commitments,
