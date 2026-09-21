@@ -59,24 +59,45 @@ authorization: it is what the validators check before they sign.
 `narsild` runs next to each validator and speaks a small JSON HTTP protocol to
 its peers.
 
-- **DKG.** Distributed interleaved Feldman VSS over Pallas — the curve Orchard
-  uses for spend authorization. Each node acts as a dealer in `outer_t`
+- **Signed roster.** Every node has a static X25519 identity and is configured
+  with the same `index → (URL, public key)` map. The roster's fingerprint —
+  SHA-256 over the sorted, length-prefixed `(index, pubkey, url)` triples —
+  is what the rest of the protocol is bound to: it derives the DKG session id,
+  which goes into the sealing prologue, and it is the `manifest_hash` of every
+  signing context. Nodes that disagree about the membership, or about where a
+  member lives, cannot complete a ceremony together.
+- **Sealed DKG.** Distributed interleaved Feldman VSS over Pallas — the curve
+  Orchard uses for spend authorization. Each node acts as a dealer in `outer_t`
   parallel ceremonies so the group ends up holding Shamir shares of each
-  coefficient of the outer polynomial; no node learns a coefficient. Validators
-  who miss the round-1 window are excluded from that ceremony rather than
-  aborting it.
-- **Nested FROST signing.** The validator set occupies a single position in an
-  outer FROST scheme, and that position is itself a threshold group. This is
+  coefficient of the outer polynomial; no node learns a coefficient. Round 1
+  carries a Schnorr proof of knowledge of the constant term, verified before
+  the commitment is recorded. Round 2 is confidential and point-to-point: each
+  recipient gets its own `Noise_K_25519_ChaChaPoly_BLAKE2s` package and no
+  other, and opening runs the Feldman check. Any complaint aborts the ceremony.
+- **Nested FROST v2 signing.** The validator set occupies a single position in
+  an outer FROST scheme, and that position is itself a threshold group. This is
   what lets the outer scheme stay small while the inner group is the whole
-  stake-weighted validator set. Signing is two rounds: nonce commitments, then
-  signature shares aggregated into `z_nested` given the outer challenge and
-  Lagrange coefficient.
-- **Epoch-bound signing context.** Signing sessions should be bound to a
-  Penumbra epoch and to the specific withdrawal event, so a signature produced
-  for one epoch's validator set cannot be replayed into another.
+  stake-weighted validator set. Under v2 the coordinator publishes the whole
+  outer round — every commitment, the group key, the nested index — and each
+  node recomputes the binding factor, challenge and Lagrange coefficient for
+  itself. A coordinator cannot assert a challenge, and cannot obtain a
+  signature over a payload the inner group did not see.
+- **Epoch-bound signing context.** The bytes signed are
+  `SigningContext { epoch, manifest_hash, message }.encode()`, with the epoch
+  and manifest taken from each node's own key package rather than from the
+  request. A node holding epoch-`e` shares refuses a round built for `e+1`.
+  Today the epoch is the DKG generation counter; when reshare lands it becomes
+  the reshare epoch, which is what makes a key-preserving reshare an actual
+  rotation. The caveat is that this binds only *osst-aware* verifiers —
+  custody authorization, escrow release, internal attestations. It does not
+  reach an Orchard `SpendAuthSig` over a consensus-fixed sighash, where there
+  is nowhere to put the epoch; retiring shares there needs an on-chain
+  rotation to a new group key, which is exactly what the fixed escrow address
+  is designed to avoid. That tension is unresolved and is called out in §6.
 - **Key-preserving reshare each epoch.** At each Penumbra epoch boundary the
   share set is reshared to the new validator set, weighted by stake. Old shares
   become useless; the group key, and hence the escrow address, is unchanged.
+  Not implemented yet.
 
 ### 2.3 Building the Orchard transaction
 
@@ -111,19 +132,27 @@ cost and should be stated plainly rather than hidden.
   incoming viewing key, see the escrow's notes. Deposits and withdrawals are
   shielded to outside observers; they are not shielded from the bridge
   operators.
-- **Cryptographic maturity.** Nested FROST is not standard FROST. The `osst`
-  security note documents an outer-binding gap in the v1 nested construction —
-  the inner binding factor omitted the outer commitment set, which collapsed
-  FROST's ROS resistance for that position — and a v2 construction that
-  restores it. v2 is implemented and unaudited. Threshold proving is research.
+- **Cryptographic maturity.** Nested FROST is not standard FROST. `osst`'s
+  `SECURITY-nested-frost.md` documents an outer-binding gap in the v1 nested
+  construction — the inner binding factor omitted the outer commitment set,
+  which collapsed FROST's ROS resistance for that position — and a v2
+  construction that restores it. osst 0.4.0 removed v1 from the default build
+  (finding R-1) and `narsild` is on v2. v2 is implemented and unaudited.
+  Threshold proving is research.
+- **Review findings already closed.** `SECURITY-REVIEW-2026-09.md` found two
+  issues in `narsild` itself: round-2 sub-shares were plaintext scalars
+  broadcast to every peer (D-1, Critical — a single participant could
+  reconstruct the group key), and nothing bound a sub-share to the commitment
+  it was checked against (D-2). Both are fixed; the key packages produced
+  before the fix are unusable and `narsild` refuses to load them.
 
 ## 4. What exists today
 
 | Piece | State |
 | --- | --- |
-| `narsild` sidecar | Prototype: DKG, two-round nested signing, peer broadcast, HTTP API. No persistence, no auth, no epoch binding. Branch `narsild`. |
+| `narsild` sidecar | Prototype: sealed DKG with proofs of knowledge and complaints, signed roster, two-round nested FROST v2 signing bound to an epoch and manifest, key packages persisted at mode 0600. No reshare, no stake weighting, no authentication on the HTTP endpoints themselves. Branch `narsild`. |
 | Token factory | Component, protos, pcli support, governance-gated and dormant by default, app version 13. Open for review as `feature/token-factory` (PR #2). |
-| `osst` (frostito) | Nested FROST v2, DKG, key-preserving proactive reshare, RedPallas. Canonical home is `github.com/penumbrafi/frostito` (crate `osst` 0.2.0, the rev `narsild` pins); the copies vendored in `zcli` and `zk.poker` are being removed. Unaudited. |
+| `osst` (frostito) | Nested FROST v2, DKG with proofs of knowledge, sealed round-2 delivery (`osst::sealed`), epoch-bound `SigningContext`, key-preserving proactive reshare, RedPallas. Canonical home is `github.com/penumbrafi/frostito`; `narsild` pins **0.4.0** (rev `bf30136`), the security release for `SECURITY-REVIEW-2026-09.md`. Unaudited. |
 | ZIP-302 memo codec | Implemented in `zcli`'s `frost-spend::memo_codec`, with typed and fragmented memos and DKG-over-memo transport. |
 | Zafu wallet | Consumes the same memo and FROST stack; the natural depositor-side UX. |
 
@@ -132,8 +161,17 @@ Missing:
 - Zcash header light client inside `pd`.
 - Bridge component: deposit detection, confirmation depth, mint/burn wiring,
   withdrawal events.
-- Epoch binding in the `narsild` signing context, and share persistence.
-- Reshare driven from Penumbra epoch transitions and stake weights.
+- Reshare driven from Penumbra epoch transitions and stake weights — until it
+  exists the signing context's epoch is only the DKG generation counter, so it
+  distinguishes one key from the next rather than one share set from the next
+  under a preserved key.
+- A durable spent-round store keyed by `(epoch, session_id, holder_index)`, so
+  a node restored from a snapshot cannot be made to reuse nonces. Open as
+  `osst` finding A-3, and the deployment's to build.
+- Authentication of the `narsild` HTTP endpoints. The roster authenticates the
+  DKG's secret round and the signing context, not the transport.
+- Stake-weighted inner shares: today every validator holds one share index.
+  `osst`'s weighted nested FROST is deferred to its own review.
 - Orchard transaction construction and proving; the prover role.
 - Slashing and timeout rules for validators that do not sign.
 - External review of nested FROST v2 and of the bridge component.
@@ -178,6 +216,13 @@ client, and make mint and burn consensus actions.
   cannot, and designing a penalty that does not punish honest downtime.
 - **Confirmation depth** on the Zcash side, and behaviour under a deep reorg
   that unwinds an already-minted deposit.
-- **Audit scope.** Nested FROST v2, the reshare protocol, the bridge
-  component, and the interaction between them — the composition is where the
-  interesting failures usually are.
+- **Retiring shares for a consensus-fixed signature.** The epoch-bound signing
+  context stops an old quorum authorizing *narsild's own* messages, but an
+  Orchard `SpendAuthSig` is over a sighash Zcash consensus fixes, with nowhere
+  to put an epoch. A pre-rotation quorum that kept its shares can still produce
+  a valid spend authorization. The fixed escrow address is the whole premise of
+  §1, so "rotate the group key" is not available. Deleting old shares is a
+  policy, not a mechanism; this needs a real answer.
+- **Audit scope.** Nested FROST v2, the sealed DKG round, the reshare protocol,
+  the bridge component, and the interaction between them — the composition is
+  where the interesting failures usually are.
