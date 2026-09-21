@@ -1103,3 +1103,63 @@ async fn a_node_with_the_default_policy_will_not_start_a_round() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// M-17: what a peer is told is a code from a closed set, and nothing about
+/// which check failed.
+#[tokio::test]
+async fn an_error_response_tells_a_peer_only_a_code() {
+    use axum::body::to_bytes;
+
+    let detailed = crate::signing::SigningError::MessageChanged(
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".into(),
+    );
+    let detail = detailed.to_string();
+    assert!(detail.contains("deadbeef"), "the local detail is still detailed");
+
+    let response = crate::err(detailed);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json.as_object().unwrap().len(), 1);
+    let code = json["error"].as_str().unwrap();
+    assert!(
+        crate::ERROR_CODES.contains(&code),
+        "{code:?} is not one of the published error codes"
+    );
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!text.contains("deadbeef"), "the session id leaked: {text}");
+    assert!(!text.contains("opened for"), "the check that failed leaked: {text}");
+}
+
+/// M-18: session state is bounded. Past the cap a new session is refused
+/// rather than allocated for — and it is the *nonce sampling* that matters,
+/// which is why the refusal comes before round 1 does anything.
+#[tokio::test]
+async fn session_state_is_bounded() {
+    let group = build_group();
+    let message = b"release escrow 42".as_slice();
+    let (service, dir) = service(&group, 0, message, "bounded");
+
+    let cap = crate::accumulator::MAX_SESSIONS;
+    for i in 0..cap {
+        let mut id = [0u8; 32];
+        id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        service.start_round1(id, message).await.unwrap();
+    }
+    assert_eq!(
+        service.signer.lock().await.live_nonce_count(),
+        cap,
+        "one nonce pair per open session"
+    );
+
+    let mut over = [0xffu8; 32];
+    over[0] = 1;
+    assert!(matches!(
+        service.start_round1(over, message).await,
+        Err(crate::signing::SigningError::TooManySessions)
+    ));
+    // And nothing was sampled for the refused session.
+    assert_eq!(service.signer.lock().await.live_nonce_count(), cap);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

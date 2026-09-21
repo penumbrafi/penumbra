@@ -89,22 +89,46 @@ struct AppState {
     outer_threshold: u32,
 }
 
-/// Report a failure to a peer.
-///
-/// The detail goes to the local log; the peer gets a code. Until M-17 lands
-/// properly the code is still the error text, but every call site now goes
-/// through one function, which is what makes that change a one-line change.
 /// The largest request body any endpoint accepts.
 const MAX_BODY_BYTES: usize = 1 << 20;
 
 /// How many DKG proposals this node will hold at once.
 const MAX_PROPOSALS: usize = 16;
 
-fn err(msg: impl std::fmt::Display) -> Response {
-    let text = msg.to_string();
-    tracing::warn!("request rejected: {}", text);
-    (axum::http::StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "rejected" }))
-        .into_response()
+/// The complete set of codes a peer can be told (M-17).
+///
+/// `err()` used to return the error's `Display` verbatim, which made the
+/// daemon a precise which-check-failed oracle: `MessageMismatch` vs
+/// `ChallengeMismatch` vs `SessionMismatch`, "no nonces for this session", the
+/// dealer index attached to osst's deliberately uninformative
+/// `SealedOpenFailed`. Combined with the unauthenticated endpoints it was a
+/// free probe of a node's epoch, manifest and nonce state.
+///
+/// The operator still gets everything: the detail goes to the log.
+pub const ERROR_CODES: &[&str] = &[UNAUTHENTICATED, REJECTED, UNAVAILABLE];
+
+/// The request was not a valid envelope from a roster member.
+const UNAUTHENTICATED: &str = "unauthenticated";
+/// The request was authenticated and this node will not act on it.
+const REJECTED: &str = "rejected";
+/// This node cannot act on it right now — no ceremony, no capacity.
+const UNAVAILABLE: &str = "unavailable";
+
+/// Report a failure to a peer: a code from [`ERROR_CODES`], and the detail to
+/// the local log.
+pub fn err(msg: impl std::fmt::Display) -> Response {
+    err_code(REJECTED, msg)
+}
+
+fn err_code(code: &'static str, msg: impl std::fmt::Display) -> Response {
+    debug_assert!(ERROR_CODES.contains(&code));
+    tracing::warn!("request rejected ({}): {}", code, msg);
+    let status = match code {
+        UNAUTHENTICATED => axum::http::StatusCode::UNAUTHORIZED,
+        UNAVAILABLE => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        _ => axum::http::StatusCode::BAD_REQUEST,
+    };
+    (status, Json(ErrorResponse { error: code })).into_response()
 }
 
 /// Verify an envelope for `path` and parse its body (M-2).
@@ -119,7 +143,9 @@ fn authed<T: DeserializeOwned>(
     path: &str,
     envelope: &Envelope,
 ) -> Result<(u32, T), Response> {
-    app.auth.open::<T>(path, envelope).map_err(err)
+    app.auth
+        .open::<T>(path, envelope)
+        .map_err(|e| err_code(UNAUTHENTICATED, e))
 }
 
 /// Refuse a message whose own index does not match the envelope that carried
@@ -130,9 +156,10 @@ fn same_index(sender: u32, claimed: u32) -> Result<(), Response> {
     if sender == claimed {
         Ok(())
     } else {
-        Err(err(format!(
-            "member {sender} sent a message claiming to be from member {claimed}"
-        )))
+        Err(err_code(
+            UNAUTHENTICATED,
+            format!("member {sender} sent a message claiming to be from member {claimed}"),
+        ))
     }
 }
 
@@ -584,7 +611,7 @@ async fn consider_proposal(app: &AppState, proposal: &dkg::DkgProposal) -> Respo
         // Bound the table: a roster of n members has no business holding more
         // than a handful of live proposals (M-18).
         if proposals.len() >= MAX_PROPOSALS && !proposals.contains_key(&digest) {
-            return err("too many open DKG proposals");
+            return err_code(UNAVAILABLE, "too many open DKG proposals");
         }
         let record = proposals.entry(digest).or_default();
         record.proposal = Some(proposal.clone());
@@ -639,7 +666,7 @@ async fn maybe_start(app: &AppState, digest: &[u8; 32]) -> Response {
     {
         let mut guard = app.dkg_ceremony.lock().await;
         if guard.is_some() {
-            return err("a DKG ceremony is already in progress on this node");
+            return err_code(UNAVAILABLE, "a DKG ceremony is already in progress on this node");
         }
         *guard = Some(ceremony);
         if let Some(c) = guard.as_mut() {
@@ -720,7 +747,7 @@ async fn handle_dkg_approve(
             // — the broadcasts race — but nothing to do with it either: a
             // proposal is what carries the terms, and approvals are counted
             // against terms this node has checked for itself.
-            None => return err("no such proposal"),
+            None => return err_code(UNAVAILABLE, "no such proposal"),
         }
     }
 
@@ -750,7 +777,7 @@ async fn handle_dkg_round1(
     let complete = match guard.as_mut().map(|c| c.receive_round1(&msg)) {
         Some(Ok(c)) => c,
         Some(Err(e)) => return report_dkg(&app, e),
-        None => return err("no DKG ceremony"),
+        None => return err_code(UNAVAILABLE, "no DKG ceremony"),
     };
 
     tracing::info!(
@@ -788,7 +815,7 @@ async fn handle_dkg_round2(
     let complete = match guard.as_mut().map(|c| c.receive_round2(&msg)) {
         Some(Ok(c)) => c,
         Some(Err(e)) => return report_dkg(&app, e),
-        None => return err("no DKG ceremony active"),
+        None => return err_code(UNAVAILABLE, "no DKG ceremony active"),
     };
 
     tracing::info!(
@@ -838,7 +865,7 @@ async fn handle_dkg_echo(
     let agreed = match guard.as_mut().map(|c| c.receive_echo(&echo)) {
         Some(Ok(a)) => a,
         Some(Err(e)) => return report_dkg(&app, e),
-        None => return err("no DKG ceremony active"),
+        None => return err_code(UNAVAILABLE, "no DKG ceremony active"),
     };
 
     if agreed {
@@ -896,7 +923,7 @@ async fn handle_dkg_complaint(
             }
             Err(e) => err(e),
         },
-        None => err("no DKG ceremony active"),
+        None => err_code(UNAVAILABLE, "no DKG ceremony active"),
     }
 }
 

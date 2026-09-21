@@ -205,6 +205,8 @@ pub enum SigningError {
     SessionSpent(String),
     #[error("cannot record the session as spent: {0}")]
     SpentStore(String),
+    #[error("this node is holding as many signing sessions as it will")]
+    TooManySessions,
     #[error("session {0} was opened for a different message")]
     MessageChanged(String),
     #[error(
@@ -245,9 +247,12 @@ pub struct LocalSigner {
     group_pubkey: Option<PallasPoint>,
     /// `P_j = σ_j·G` for every inner holder, for share verification.
     public_shares: Vec<(u32, PallasPoint)>,
-    /// Live nonces, one per session. `InnerNonces` is not `Clone` and zeroizes
-    /// on drop, so taking one out of the map is what spends it.
-    nonces: BTreeMap<[u8; 32], InnerNonces<PallasScalar>>,
+    /// Live nonces, one per session, with the moment they were sampled.
+    ///
+    /// `InnerNonces` is not `Clone` and zeroizes on drop, so taking one out of
+    /// the map is what spends it — and dropping an expired one is what
+    /// scrubs it (M-18).
+    nonces: BTreeMap<[u8; 32], (std::time::Instant, InnerNonces<PallasScalar>)>,
 }
 
 impl LocalSigner {
@@ -306,13 +311,31 @@ impl LocalSigner {
             hiding: point_hex(&commitments.hiding),
             binding: point_hex(&commitments.binding),
         };
-        self.nonces.insert(session_id, nonces);
+        self.gc();
+        self.nonces
+            .insert(session_id, (std::time::Instant::now(), nonces));
         wire
     }
 
     /// Whether this node has live nonces for a session.
     pub fn has_nonces(&self, session_id: &[u8; 32]) -> bool {
         self.nonces.contains_key(session_id)
+    }
+
+    /// Drop nonces for sessions that have timed out.
+    ///
+    /// Dropping is the scrub: `InnerNonces` zeroizes on drop, so an expired
+    /// session's secret nonce material does not sit in the process for the
+    /// lifetime of the daemon.
+    pub fn gc(&mut self) {
+        self.nonces
+            .retain(|_, (at, _)| at.elapsed() < crate::accumulator::SESSION_TTL);
+    }
+
+    /// How many sessions this node holds live nonces for.
+    #[allow(dead_code)]
+    pub fn live_nonce_count(&self) -> usize {
+        self.nonces.len()
     }
 
     /// Round 2.
@@ -339,7 +362,7 @@ impl LocalSigner {
             return Err(SigningError::WrongGroupKey);
         }
 
-        let nonces = self
+        let (_, nonces) = self
             .nonces
             .remove(&req.session_id)
             .ok_or(SigningError::NoNonces)?;
@@ -470,6 +493,8 @@ pub struct SigningService {
     pub requests: Arc<Mutex<BTreeMap<[u8; 32], SigningRequest>>>,
     /// `z_nested` per session, once a verified quorum has been aggregated.
     pub results: Arc<Mutex<BTreeMap<[u8; 32], String>>>,
+    /// When each session was opened, for collection (M-18).
+    pub opened_at: Arc<Mutex<BTreeMap<[u8; 32], std::time::Instant>>>,
 }
 
 impl Clone for SigningService {
@@ -484,6 +509,7 @@ impl Clone for SigningService {
             spent: self.spent.clone(),
             requests: self.requests.clone(),
             results: self.results.clone(),
+            opened_at: self.opened_at.clone(),
         }
     }
 }
@@ -506,6 +532,7 @@ impl SigningService {
             spent,
             requests: Arc::new(Mutex::new(BTreeMap::new())),
             results: Arc::new(Mutex::new(BTreeMap::new())),
+            opened_at: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -514,7 +541,26 @@ impl SigningService {
     ///
     /// This is the gate in front of nonce sampling: a session that does not
     /// get past it produces no secret state at all.
+    /// Drop the per-session tables for sessions past their TTL, and scrub the
+    /// nonces with them.
+    pub async fn gc(&self) {
+        let mut opened = self.opened_at.lock().await;
+        let expired: Vec<[u8; 32]> = opened
+            .iter()
+            .filter(|(_, at)| at.elapsed() >= crate::accumulator::SESSION_TTL)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &expired {
+            opened.remove(id);
+            self.approved.lock().await.remove(id);
+            self.requests.lock().await.remove(id);
+            self.results.lock().await.remove(id);
+        }
+        self.signer.lock().await.gc();
+    }
+
     async fn open_session(&self, session_id: [u8; 32], message: &[u8]) -> Result<(), SigningError> {
+        self.gc().await;
         // M-13: before anything else. A session id whose share has been
         // released must never open again, whatever the message or the policy
         // says.
@@ -529,7 +575,14 @@ impl SigningService {
                 if !self.policy.approve(message) {
                     return Err(SigningError::PolicyRefused);
                 }
+                if approved.len() >= crate::accumulator::MAX_SESSIONS {
+                    return Err(SigningError::TooManySessions);
+                }
                 approved.insert(session_id, message.to_vec());
+                self.opened_at
+                    .lock()
+                    .await
+                    .insert(session_id, std::time::Instant::now());
                 Ok(())
             }
         }
@@ -542,9 +595,13 @@ impl SigningService {
         message: &[u8],
     ) -> Result<InnerCommitment, SigningError> {
         self.open_session(session_id, message).await?;
-        self.round1
+        if !self
+            .round1
             .ensure_session(session_id, |c| c.to_vec())
-            .await;
+            .await
+        {
+            return Err(SigningError::TooManySessions);
+        }
         let commitment = self.signer.lock().await.commit(session_id, message);
         let _ = self.round1.accumulate(&session_id, commitment.clone()).await;
         self.peers.broadcast("/sign/commitment", &commitment);
@@ -561,9 +618,13 @@ impl SigningService {
             .map_err(|_| SigningError::Malformed("message_hex is not hex"))?;
         self.open_session(session_id, &message).await?;
 
-        self.round1
+        if !self
+            .round1
             .ensure_session(session_id, |c| c.to_vec())
-            .await;
+            .await
+        {
+            return Err(SigningError::TooManySessions);
+        }
         let result = self.round1.accumulate(&session_id, commitment).await;
 
         let mut signer = self.signer.lock().await;
@@ -600,9 +661,13 @@ impl SigningService {
             .await
             .entry(session_id)
             .or_insert_with(|| req.clone());
-        self.round2
+        if !self
+            .round2
             .ensure_session(session_id, |s| s.to_vec())
-            .await;
+            .await
+        {
+            return Err(SigningError::TooManySessions);
+        }
 
         // M-13: the durable record goes down before the share is produced, not
         // after. A crash between releasing a share and recording the session
@@ -622,9 +687,11 @@ impl SigningService {
     /// Accept a peer's round-2 share.
     pub async fn receive_share(&self, share: InnerShare) -> AccumulateResult<ShareList> {
         let session_id = share.session_id;
-        self.round2
-            .ensure_session(session_id, |s| s.to_vec())
-            .await;
+        // A share for a session this node never opened is dropped rather than
+        // allocated for: the round-2 request is what opens a session.
+        if self.round2.status(&session_id).await.is_none() {
+            return AccumulateResult::Duplicate;
+        }
         let result = self.round2.accumulate(&session_id, share).await;
         self.try_aggregate(&session_id).await;
         result

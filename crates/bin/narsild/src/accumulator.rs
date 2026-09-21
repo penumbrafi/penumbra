@@ -13,7 +13,20 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, watch};
+
+/// How long a session may sit before it is collected (M-18).
+///
+/// Session state was never expired and never bounded, and
+/// `receive_commitment` sampled **secret nonces** for any session id a caller
+/// announced — so an unauthenticated party made the node generate and retain
+/// unbounded live nonce material. Authentication (M-2) means only a roster
+/// member can do that now; this means it does not accumulate even then.
+pub const SESSION_TTL: Duration = Duration::from_secs(600);
+
+/// How many sessions may be live at once.
+pub const MAX_SESSIONS: usize = 64;
 
 /// a contribution to a threshold accumulation session
 pub trait Contribution: Clone + Send + Sync + 'static {
@@ -37,6 +50,7 @@ type AggregateFn<C, A> = Box<dyn Fn(&[C]) -> A + Send + Sync>;
 
 /// session state for one accumulation
 pub struct Session<C: Contribution, A: Aggregate> {
+    created_at: Instant,
     contributions: BTreeMap<C::Id, C>,
     threshold: usize,
     aggregate_fn: AggregateFn<C, A>,
@@ -95,15 +109,22 @@ where
     /// Ensure a session exists, with the aggregation to run once the
     /// threshold is met. Idempotent: a session that already exists keeps the
     /// aggregation it was created with.
+    /// Returns `false` if the accumulator is at capacity and this key is new —
+    /// the caller must refuse the request rather than grow without bound.
     pub async fn ensure_session(
         &self,
         key: K,
         aggregate_fn: impl Fn(&[C]) -> A + Send + Sync + 'static,
-    ) {
+    ) -> bool {
         let mut sessions = self.sessions.lock().await;
+        sessions.retain(|_, s| s.created_at.elapsed() < SESSION_TTL);
+        if sessions.len() >= MAX_SESSIONS && !sessions.contains_key(&key) {
+            return false;
+        }
         sessions.entry(key).or_insert_with(|| {
             let (tx, _rx) = watch::channel(0usize);
             Session {
+                created_at: Instant::now(),
                 contributions: BTreeMap::new(),
                 threshold: self.threshold,
                 aggregate_fn: Box::new(aggregate_fn),
@@ -111,6 +132,13 @@ where
                 notify: tx,
             }
         });
+        true
+    }
+
+    /// How many sessions are live. For the health endpoint and the tests.
+    #[allow(dead_code)]
+    pub async fn session_count(&self) -> usize {
+        self.sessions.lock().await.len()
     }
 
     /// add a contribution. deduplicates, checks threshold, aggregates.
