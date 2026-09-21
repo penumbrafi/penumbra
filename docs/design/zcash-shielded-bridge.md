@@ -73,7 +73,9 @@ its peers.
   carries a Schnorr proof of knowledge of the constant term, verified before
   the commitment is recorded. Round 2 is confidential and point-to-point: each
   recipient gets its own `Noise_K_25519_ChaChaPoly_BLAKE2s` package and no
-  other, and opening runs the Feldman check. Any complaint aborts the ceremony.
+  other, and opening runs the Feldman check. A failed check is a complaint
+  naming the dealer; it is broadcast, and aborts the ceremony on every node
+  rather than only on the node that raised it.
 - **Nested FROST v2 signing.** The validator set occupies a single position in
   an outer FROST scheme, and that position is itself a threshold group. This is
   what lets the outer scheme stay small while the inner group is the whole

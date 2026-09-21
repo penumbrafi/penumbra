@@ -66,7 +66,14 @@ Now:
   sealed plaintext, so a sub-share and a commitment cannot be sourced
   separately).
 - `open_subshare` runs the Feldman check itself and names the dealer on
-  failure. A failure is a complaint, and **any complaint aborts the ceremony**.
+  failure. A failure is a complaint; the complaint is broadcast, and **any
+  complaint aborts the ceremony on every node**. A complaint that stayed with
+  the node that raised it would be worse than useless: the others would
+  finalize and write key packages for a group one member is not in. A
+  complaint is not publicly verifiable — the package it is about was sealed to
+  the complainant — so accepting one on trust lets any single member halt a
+  ceremony. That is the price of confidentiality in round 2, and with a fixed
+  roster and a cheap restart it is the right way round.
 
 ### The signed roster
 
@@ -121,6 +128,10 @@ shares there needs an on-chain rotation to a new group key.
   contributions. Keep the port on a private network.
 - Resharing is not implemented, so the epoch only ever advances by re-running
   the DKG, which changes the group key.
+- Message delivery is fire-and-forget with no ordering or retry, so a round-2
+  package that overtakes its dealer's round-1 broadcast is dropped and the
+  ceremony stalls until it is restarted. Pre-existing; a retry queue is the
+  obvious fix and is not here.
 - Nonce state is in memory. A node that restarts between round 1 and round 2
   loses its nonces, which is safe; a node that is restored from a snapshot
   could be made to reuse them, which is not. A durable spent-round store keyed
@@ -169,6 +180,10 @@ polynomial. Nobody learns the coefficients themselves.
 3. **Round 3** — aggregate into this node's share of each outer coefficient,
    and write the key package.
 
+A ceremony's epoch must advance: a node refuses to re-run a generation it has
+already completed, because the key package it would overwrite is the one its
+peers expect.
+
 The ceremony has no transport of its own: it produces messages and consumes
 messages, and the delivery policy lives in the handlers. That is what lets the
 whole protocol run in-process in a test, and it is why round 2 cannot
@@ -213,6 +228,7 @@ All endpoints are JSON.
 | POST | `/dkg/init` | Begin a DKG ceremony for a generation |
 | POST | `/dkg/round1` | Peer submits Feldman commitments and proof of knowledge |
 | POST | `/dkg/round2` | Peer delivers this node's sealed sub-shares |
+| POST | `/dkg/complaint` | Peer reports a bad dealer; aborts the ceremony here too |
 | POST | `/dkg/activate` | Re-install the persisted key package |
 | GET | `/dkg/status` | Ceremony progress, including any complaint |
 | GET | `/health` | Liveness, roster hash, identity, epoch |

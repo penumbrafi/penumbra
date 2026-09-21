@@ -186,6 +186,11 @@ pub enum DkgError {
          osst::dkg::DkgState addresses dealers positionally"
     )]
     NonContiguousRoster(u32),
+    #[error(
+        "refusing a DKG for epoch {asked}: this node is already at epoch {current}, \
+         and the key package for it is the one its peers expect"
+    )]
+    EpochNotAdvancing { current: u64, asked: u64 },
     #[error("epoch mismatch: ours is {ours}, peer {peer_index} says {theirs}")]
     EpochMismatch {
         peer_index: u32,
@@ -679,6 +684,34 @@ impl DkgCeremony {
         };
         self.result = Some(result.clone());
         Ok(result)
+    }
+
+    /// Accept a complaint raised by another participant, and abort.
+    ///
+    /// A complaint is not publicly verifiable: the package it is about was
+    /// sealed to the complainant, so nobody else can check it. Accepting one
+    /// on trust means any single member can halt a ceremony — a liveness
+    /// denial, and the price of confidentiality in round 2 without a
+    /// publicly-verifiable encryption scheme. It is the right trade here: the
+    /// roster is fixed and restarting a ceremony is cheap, whereas members
+    /// continuing without the complainant is how one partition ends up with
+    /// two groups holding different keys.
+    ///
+    /// Idempotent, and the first complaint is the one recorded.
+    pub fn receive_complaint(&mut self, complaint: &Complaint) -> Result<(), DkgError> {
+        self.roster.get(complaint.complainant_index)?;
+        self.roster.get(complaint.dealer_index)?;
+        if self.aborted.is_none() {
+            tracing::error!(
+                "DKG aborted: holder {} complains of dealer {} for coefficient {}: {}",
+                complaint.complainant_index,
+                complaint.dealer_index,
+                complaint.coeff_index,
+                complaint.reason
+            );
+            self.aborted = Some(complaint.clone());
+        }
+        Ok(())
     }
 
     fn abort(&mut self, complaint: Complaint) -> DkgError {

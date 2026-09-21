@@ -67,6 +67,20 @@ fn err(msg: impl std::fmt::Display) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "error": msg.to_string() }))
 }
 
+/// Report a DKG failure, telling the other members if it was a complaint.
+///
+/// A complaint that stays on the node that raised it is worse than useless:
+/// the others finalize, write key packages, and the group ends up split
+/// between nodes that completed a ceremony and one that did not. The complaint
+/// itself is public — it names a dealer and a reason, not a share — so it is
+/// broadcast.
+fn report_dkg(app: &AppState, e: dkg::DkgError) -> Json<serde_json::Value> {
+    if let dkg::DkgError::Aborted(ref complaint) = e {
+        app.peers.broadcast("/dkg/complaint", complaint);
+    }
+    err(e)
+}
+
 // ---------------------------------------------------------------------------
 // Signing handlers
 // ---------------------------------------------------------------------------
@@ -243,7 +257,16 @@ struct DkgInitRequest {
     epoch: Option<u64>,
 }
 
-fn new_ceremony(app: &AppState, epoch: u64) -> Result<dkg::DkgCeremony, dkg::DkgError> {
+/// Build a ceremony for `epoch`, refusing to go backwards.
+///
+/// The epoch is what makes an old share set unable to sign, so a node must
+/// never be talked into re-running a generation it has already completed: the
+/// key package it would overwrite is the one whose epoch its peers expect.
+async fn new_ceremony(app: &AppState, epoch: u64) -> Result<dkg::DkgCeremony, dkg::DkgError> {
+    let current = app.signing.signer.lock().await.epoch;
+    if epoch <= current {
+        return Err(dkg::DkgError::EpochNotAdvancing { current, asked: epoch });
+    }
     dkg::DkgCeremony::new(
         app.holder_index,
         app.roster.clone(),
@@ -269,6 +292,9 @@ async fn run_round2(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) {
         Ok(m) => m,
         Err(e) => {
             tracing::error!("DKG round 2: {}", e);
+            if let dkg::DkgError::Aborted(ref c) = e {
+                app.peers.broadcast("/dkg/complaint", c);
+            }
             return;
         }
     };
@@ -287,6 +313,9 @@ async fn run_round2(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) {
     if let Some(msg) = ours {
         if let Err(e) = ceremony.receive_round2(&msg) {
             tracing::error!("DKG round 2 (own packages): {}", e);
+            if let dkg::DkgError::Aborted(ref c) = e {
+                app.peers.broadcast("/dkg/complaint", c);
+            }
         }
     }
 }
@@ -343,7 +372,7 @@ async fn handle_dkg_init(
         None => next_epoch(&app).await,
     };
 
-    let ceremony = match new_ceremony(&app, epoch) {
+    let ceremony = match new_ceremony(&app, epoch).await {
         Ok(c) => c,
         Err(e) => return err(e),
     };
@@ -353,7 +382,7 @@ async fn handle_dkg_init(
     *guard = Some(ceremony);
     if let Some(c) = guard.as_mut() {
         if let Err(e) = c.receive_round1(&broadcast) {
-            return err(e);
+            return report_dkg(&app, e);
         }
     }
     app.peers.broadcast("/dkg/round1", &broadcast);
@@ -381,7 +410,7 @@ async fn handle_dkg_round1(
 
     if guard.is_none() {
         // A peer started the ceremony; adopt its epoch and publish ours.
-        let ceremony = match new_ceremony(&app, msg.epoch) {
+        let ceremony = match new_ceremony(&app, msg.epoch).await {
             Ok(c) => c,
             Err(e) => return err(e),
         };
@@ -389,7 +418,7 @@ async fn handle_dkg_round1(
         *guard = Some(ceremony);
         if let Some(c) = guard.as_mut() {
             if let Err(e) = c.receive_round1(&ours) {
-                return err(e);
+                return report_dkg(&app, e);
             }
         }
         app.peers.broadcast("/dkg/round1", &ours);
@@ -398,7 +427,7 @@ async fn handle_dkg_round1(
 
     let complete = match guard.as_mut().map(|c| c.receive_round1(&msg)) {
         Some(Ok(c)) => c,
-        Some(Err(e)) => return err(e),
+        Some(Err(e)) => return report_dkg(&app, e),
         None => return err("no DKG ceremony"),
     };
 
@@ -426,7 +455,7 @@ async fn handle_dkg_round2(
     let mut guard = app.dkg_ceremony.lock().await;
     let complete = match guard.as_mut().map(|c| c.receive_round2(&msg)) {
         Some(Ok(c)) => c,
-        Some(Err(e)) => return err(e),
+        Some(Err(e)) => return report_dkg(&app, e),
         None => return err("no DKG ceremony active"),
     };
 
@@ -446,6 +475,22 @@ async fn handle_dkg_round2(
         }
     }
     Json(serde_json::json!({"accepted": true, "round2_complete": complete}))
+}
+
+/// A peer raised a complaint. Abort here too: a ceremony that continues
+/// without one member produces a key that member does not hold.
+async fn handle_dkg_complaint(
+    State(app): State<AppState>,
+    Json(complaint): Json<dkg::Complaint>,
+) -> impl IntoResponse {
+    let mut guard = app.dkg_ceremony.lock().await;
+    match guard.as_mut() {
+        Some(c) => match c.receive_complaint(&complaint) {
+            Ok(()) => Json(serde_json::json!({"accepted": true, "aborted": true})),
+            Err(e) => err(e),
+        },
+        None => Json(serde_json::json!({"accepted": false, "reason": "no DKG ceremony active"})),
+    }
 }
 
 async fn handle_dkg_status(State(app): State<AppState>) -> impl IntoResponse {
@@ -672,6 +717,7 @@ async fn main() {
         .route("/dkg/init", axum::routing::post(handle_dkg_init))
         .route("/dkg/round1", axum::routing::post(handle_dkg_round1))
         .route("/dkg/round2", axum::routing::post(handle_dkg_round2))
+        .route("/dkg/complaint", axum::routing::post(handle_dkg_complaint))
         .route("/dkg/activate", axum::routing::post(handle_dkg_activate))
         .route("/dkg/status", axum::routing::get(handle_dkg_status))
         .route("/health", axum::routing::get(handle_health))

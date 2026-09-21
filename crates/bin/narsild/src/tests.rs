@@ -162,6 +162,68 @@ fn a_corrupted_sealed_package_names_its_dealer() {
     }
 }
 
+/// A complaint reaches the other members, and stops them too.
+///
+/// This is the property the broadcast exists for: a ceremony that continues
+/// without the complainant produces a key the complainant does not hold, and
+/// the group is then split between nodes that finished and one that did not.
+#[test]
+fn a_complaint_stops_every_member_not_just_the_complainant() {
+    let roster = roster();
+    let mut ceremonies: Vec<DkgCeremony> = (1..=N)
+        .map(|i| {
+            DkgCeremony::new(
+                i,
+                roster.clone(),
+                x25519_secret_from_seed(&seed(i)),
+                EPOCH,
+                INNER_T,
+                OUTER_T,
+            )
+            .unwrap()
+        })
+        .collect();
+
+    let broadcasts: Vec<_> = ceremonies.iter().map(|c| c.round1_broadcast()).collect();
+    for ceremony in ceremonies.iter_mut() {
+        for b in &broadcasts {
+            ceremony.receive_round1(b).unwrap();
+        }
+    }
+
+    // Node 1 is handed a corrupted package from dealer 2 and complains.
+    let mut msg = ceremonies[1]
+        .round2_messages()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.recipient_index == 1)
+        .unwrap();
+    let mut bytes = hex::decode(&msg.sealed[0].ciphertext).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xff;
+    msg.sealed[0].ciphertext = hex::encode(bytes);
+
+    let complaint = match ceremonies[0].receive_round2(&msg).unwrap_err() {
+        DkgError::Aborted(c) => c,
+        other => panic!("expected an abort, got {other}"),
+    };
+    assert_eq!(complaint.dealer_index, 2);
+
+    // The complaint is broadcast; everyone else stops.
+    for ceremony in ceremonies.iter_mut().skip(1) {
+        ceremony.receive_complaint(&complaint).unwrap();
+    }
+    assert!(ceremonies.iter().all(|c| c.abort_reason().is_some()));
+
+    // And an aborted ceremony will not finalize into a key package.
+    for ceremony in ceremonies.iter_mut() {
+        assert!(matches!(
+            ceremony.finalize().unwrap_err(),
+            DkgError::AlreadyAborted(_)
+        ));
+    }
+}
+
 /// Nodes that disagree about the roster derive different session ids, so
 /// nothing they exchange opens. This is the URL-substitution defence.
 #[test]
