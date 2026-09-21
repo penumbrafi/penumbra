@@ -27,6 +27,8 @@ const INNER_T: u32 = 2;
 const OUTER_T: u32 = 2;
 const NESTED_POSITION: u32 = 1;
 const EPOCH: u64 = 7;
+/// The attempt nonce every in-process ceremony here runs under (M-15).
+const CEREMONY_NONCE: [u8; 32] = [0x9cu8; 32];
 
 fn seed(i: u32) -> [u8; 32] {
     [i as u8; 32]
@@ -68,6 +70,7 @@ fn run_dkg(
                 roster.clone(),
                 x25519_secret_from_seed(&seed(i)),
                 EPOCH,
+                CEREMONY_NONCE,
                 INNER_T,
                 OUTER_T,
             )
@@ -179,6 +182,7 @@ fn a_complaint_stops_every_member_not_just_the_complainant() {
                 roster.clone(),
                 x25519_secret_from_seed(&seed(i)),
                 EPOCH,
+                CEREMONY_NONCE,
                 INNER_T,
                 OUTER_T,
             )
@@ -240,6 +244,7 @@ fn a_node_with_a_different_roster_cannot_join() {
         honest.clone(),
         x25519_secret_from_seed(&seed(1)),
         EPOCH,
+        CEREMONY_NONCE,
         INNER_T,
         OUTER_T,
     )
@@ -249,6 +254,7 @@ fn a_node_with_a_different_roster_cannot_join() {
         tampered,
         x25519_secret_from_seed(&seed(2)),
         EPOCH,
+        CEREMONY_NONCE,
         INNER_T,
         OUTER_T,
     )
@@ -760,4 +766,52 @@ fn a_request_naming_another_group_key_is_refused() {
     ));
     // Still able to sign the honest request afterwards.
     assert!(signers[1].sign(&honest).is_ok());
+}
+
+/// M-15: a re-run of a failed ceremony at the same epoch is a different
+/// ceremony. A node in attempt A does not accept attempt B's round 1, so a
+/// recorded round-1/round-2 pair cannot be replayed into the re-run ahead of
+/// the honest dealer's own.
+#[test]
+fn a_rerun_at_the_same_epoch_is_a_different_ceremony() {
+    let roster = roster();
+    let attempt_a = DkgCeremony::new(
+        1,
+        roster.clone(),
+        x25519_secret_from_seed(&seed(1)),
+        EPOCH,
+        [0xa1u8; 32],
+        INNER_T,
+        OUTER_T,
+    )
+    .unwrap();
+    let mut attempt_b = DkgCeremony::new(
+        1,
+        roster.clone(),
+        x25519_secret_from_seed(&seed(1)),
+        EPOCH,
+        [0xb2u8; 32],
+        INNER_T,
+        OUTER_T,
+    )
+    .unwrap();
+
+    assert_ne!(attempt_a.session_id, attempt_b.session_id);
+
+    let stale = DkgCeremony::new(
+        2,
+        roster,
+        x25519_secret_from_seed(&seed(2)),
+        EPOCH,
+        [0xa1u8; 32],
+        INNER_T,
+        OUTER_T,
+    )
+    .unwrap()
+    .round1_broadcast();
+
+    assert!(matches!(
+        attempt_b.receive_round1(&stale).unwrap_err(),
+        DkgError::CeremonyMismatch(2)
+    ));
 }

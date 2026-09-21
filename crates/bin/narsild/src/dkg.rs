@@ -97,6 +97,11 @@ pub struct DkgRound1Broadcast {
     /// The DKG generation this ceremony is producing. Binds the proofs of
     /// knowledge, so one ceremony's proof cannot be replayed into another.
     pub epoch: u64,
+    /// The 32-byte nonce that distinguishes this *attempt* from another at the
+    /// same epoch (M-15). Chosen by the initiator, echoed by every member;
+    /// a broadcast carrying a different one is not part of this ceremony.
+    #[serde(with = "crate::codec::bytes32")]
+    pub ceremony_nonce: [u8; 32],
     /// The sender's roster fingerprint, hex. A mismatch means the two nodes
     /// disagree about the participant set and must not proceed.
     pub roster_hash: String,
@@ -227,6 +232,8 @@ pub enum DkgError {
          and the key package for it is the one its peers expect"
     )]
     EpochNotAdvancing { current: u64, asked: u64 },
+    #[error("peer {0} is taking part in a different attempt at this epoch")]
+    CeremonyMismatch(u32),
     #[error("epoch mismatch: ours is {ours}, peer {peer_index} says {theirs}")]
     EpochMismatch {
         peer_index: u32,
@@ -280,6 +287,8 @@ pub struct DkgCeremony {
     pub outer_t: u32,
     /// This ceremony's session id.
     pub session_id: [u8; 32],
+    /// The attempt nonce the session id is derived from.
+    pub ceremony_nonce: [u8; 32],
     roster: Arc<Roster>,
     roster_hash_hex: String,
     sealed_roster: SealedRoster,
@@ -309,6 +318,7 @@ impl DkgCeremony {
         roster: Arc<Roster>,
         x25519_secret: [u8; 32],
         epoch: u64,
+        ceremony_nonce: [u8; 32],
         inner_t: u32,
         outer_t: u32,
     ) -> Result<Self, DkgError> {
@@ -338,9 +348,10 @@ impl DkgCeremony {
             inner_n: n,
             inner_t,
             outer_t,
-            session_id: roster.session_id(epoch),
+            session_id: roster.session_id(epoch, &ceremony_nonce),
+            ceremony_nonce,
             roster_hash_hex: hex::encode(roster.hash()),
-            sealed_roster: roster.sealed_roster(epoch)?,
+            sealed_roster: roster.sealed_roster(epoch, &ceremony_nonce)?,
             roster,
             x25519_secret,
             dealers,
@@ -390,6 +401,7 @@ impl DkgCeremony {
         DkgRound1Broadcast {
             dealer_index: self.holder_index,
             epoch: self.epoch,
+            ceremony_nonce: self.ceremony_nonce,
             roster_hash: self.roster_hash_hex.clone(),
             coefficients,
         }
@@ -413,6 +425,9 @@ impl DkgCeremony {
                 ours: self.epoch,
                 theirs: msg.epoch,
             });
+        }
+        if msg.ceremony_nonce != self.ceremony_nonce {
+            return Err(DkgError::CeremonyMismatch(msg.dealer_index));
         }
         if msg.roster_hash != self.roster_hash_hex {
             return Err(DkgError::RosterMismatch(msg.dealer_index));

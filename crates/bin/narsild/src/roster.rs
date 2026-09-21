@@ -221,26 +221,44 @@ impl Roster {
         VerifyingKey::from_bytes(&peer.ed25519_pub).map_err(|_| RosterError::BadSigningKey(index))
     }
 
-    /// The ceremony session id for `epoch`: deterministic, so every node
-    /// derives it without a negotiation round, and different on any roster or
-    /// epoch change.
-    pub fn session_id(&self, epoch: u64) -> [u8; 32] {
+    /// The session id of one ceremony **attempt**:
+    /// `H(domain ‖ roster hash ‖ epoch ‖ ceremony nonce)`.
+    ///
+    /// The nonce is 32 random bytes chosen by whoever starts the ceremony and
+    /// echoed by every member (M-15). Without it the session id was a function
+    /// of the roster and the epoch alone, so a re-run of a *failed* ceremony —
+    /// which happens at the same epoch, by definition — reproduced a
+    /// byte-identical session id and Noise prologue, and an attacker who
+    /// recorded attempt A could replay a dealer's round-1 and round-2 messages
+    /// into attempt B ahead of that dealer's own.
+    ///
+    /// This value is the ceremony's identity: the Noise prologue via
+    /// [`Self::sealed_roster`], the echo round's binding, and what a complaint
+    /// names. It is deliberately *not* the manifest hash — that stays
+    /// [`Self::hash`], because the manifest is who the group is, which does
+    /// not change between two attempts at the same generation.
+    pub fn session_id(&self, epoch: u64, ceremony_nonce: &[u8; 32]) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(SESSION_DOMAIN);
         h.update(self.hash());
         h.update(epoch.to_le_bytes());
+        h.update(ceremony_nonce);
         h.finalize().into()
     }
 
-    /// The osst view of this roster for `epoch`: `(index, pubkey)` pairs under
-    /// the session id derived above.
-    pub fn sealed_roster(&self, epoch: u64) -> Result<SealedRoster, osst::OsstError> {
+    /// The osst view of this roster for one attempt: `(index, pubkey)` pairs
+    /// under the session id derived above.
+    pub fn sealed_roster(
+        &self,
+        epoch: u64,
+        ceremony_nonce: &[u8; 32],
+    ) -> Result<SealedRoster, osst::OsstError> {
         let pairs: Vec<(u32, [u8; 32])> = self
             .members
             .iter()
             .map(|m| (m.index, m.x25519_pub))
             .collect();
-        SealedRoster::new(&pairs, self.session_id(epoch))
+        SealedRoster::new(&pairs, self.session_id(epoch, ceremony_nonce))
     }
 }
 
@@ -310,12 +328,28 @@ mod tests {
     #[test]
     fn the_session_id_changes_with_the_epoch_and_with_the_roster() {
         let r = Roster::new(three()).unwrap();
-        assert_ne!(r.session_id(0), r.session_id(1));
+        let n = [7u8; 32];
+        assert_ne!(r.session_id(0, &n), r.session_id(1, &n));
 
         let mut moved = three();
         moved[0].url = "http://a2:9200".into();
         let r2 = Roster::new(moved).unwrap();
-        assert_ne!(r.session_id(7), r2.session_id(7));
+        assert_ne!(r.session_id(7, &n), r2.session_id(7, &n));
+    }
+
+    /// M-15: two attempts at the same generation on the same roster are
+    /// different ceremonies. A failed DKG is re-run at the same epoch, which
+    /// is precisely the case the epoch does not separate.
+    #[test]
+    fn two_attempts_at_one_epoch_are_different_ceremonies() {
+        let r = Roster::new(three()).unwrap();
+        assert_ne!(r.session_id(7, &[1u8; 32]), r.session_id(7, &[2u8; 32]));
+        assert_ne!(
+            r.sealed_roster(7, &[1u8; 32]).unwrap().prologue(2),
+            r.sealed_roster(7, &[2u8; 32]).unwrap().prologue(2)
+        );
+        // The manifest hash is not the session id and does not move with it.
+        assert_eq!(r.hash(), Roster::new(three()).unwrap().hash());
     }
 
     /// The property the derivation exists for: a URL substitution reaches the
@@ -328,8 +362,8 @@ mod tests {
         moved[2].url = "http://attacker:9200".into();
         let r2 = Roster::new(moved).unwrap();
         assert_ne!(
-            r.sealed_roster(0).unwrap().prologue(2),
-            r2.sealed_roster(0).unwrap().prologue(2)
+            r.sealed_roster(0, &[0u8; 32]).unwrap().prologue(2),
+            r2.sealed_roster(0, &[0u8; 32]).unwrap().prologue(2)
         );
     }
 

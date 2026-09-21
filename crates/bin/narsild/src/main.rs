@@ -342,7 +342,11 @@ struct DkgInitRequest {
 /// The epoch is what makes an old share set unable to sign, so a node must
 /// never be talked into re-running a generation it has already completed: the
 /// key package it would overwrite is the one whose epoch its peers expect.
-async fn new_ceremony(app: &AppState, epoch: u64) -> Result<dkg::DkgCeremony, dkg::DkgError> {
+async fn new_ceremony(
+    app: &AppState,
+    epoch: u64,
+    ceremony_nonce: [u8; 32],
+) -> Result<dkg::DkgCeremony, dkg::DkgError> {
     let current = app.signing.signer.lock().await.epoch;
     if epoch <= current {
         return Err(dkg::DkgError::EpochNotAdvancing { current, asked: epoch });
@@ -352,6 +356,7 @@ async fn new_ceremony(app: &AppState, epoch: u64) -> Result<dkg::DkgCeremony, dk
         app.roster.clone(),
         app.identity.x25519_secret(),
         epoch,
+        ceremony_nonce,
         app.inner_threshold,
         app.outer_threshold,
     )
@@ -475,10 +480,16 @@ async fn handle_dkg_init(
         None => next_epoch(&app).await,
     };
 
-    let ceremony = match new_ceremony(&app, epoch).await {
+    // M-15: a fresh attempt nonce, so a re-run at this epoch is a different
+    // ceremony with a different session id and prologue.
+    let mut ceremony_nonce = [0u8; 32];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut ceremony_nonce);
+
+    let ceremony = match new_ceremony(&app, epoch, ceremony_nonce).await {
         Ok(c) => c,
         Err(e) => return err(e),
     };
+    let session_id = ceremony.session_id;
     let broadcast = ceremony.round1_broadcast();
 
     let mut guard = app.dkg_ceremony.lock().await;
@@ -500,7 +511,7 @@ async fn handle_dkg_init(
     Json(DkgStartedResponse {
         status: "round1_broadcast",
         epoch,
-        session_id: hex::encode(app.roster.session_id(epoch)),
+        session_id: hex::encode(session_id),
         holder_index: app.holder_index,
         coefficients: broadcast.coefficients.len(),
     })
@@ -526,7 +537,7 @@ async fn handle_dkg_round1(
 
     if guard.is_none() {
         // A peer started the ceremony; adopt its epoch and publish ours.
-        let ceremony = match new_ceremony(&app, msg.epoch).await {
+        let ceremony = match new_ceremony(&app, msg.epoch, msg.ceremony_nonce).await {
             Ok(c) => c,
             Err(e) => return err(e),
         };
