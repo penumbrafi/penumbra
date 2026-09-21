@@ -674,3 +674,90 @@ fn the_coordinator_request_round_trips_through_the_wire_types() {
     assert_eq!(echoed.len(), 1);
     assert_eq!(echoed[0].index, NESTED_POSITION);
 }
+
+// ---------------------------------------------------------------------------
+// The node's own anchoring checks
+// ---------------------------------------------------------------------------
+
+/// A [`crate::signing::LocalSigner`] loaded from holder `k`'s key package,
+/// with live nonces for `session_id`.
+fn local_signer(
+    group: &Group,
+    k: usize,
+    session_id: [u8; 32],
+    message: &[u8],
+) -> crate::signing::LocalSigner {
+    let package = &group.packages[k];
+    let mut signer = crate::signing::LocalSigner::new(
+        package.holder_index,
+        NESTED_POSITION,
+        package.epoch,
+        package.manifest_hash(),
+        package.share_at(NESTED_POSITION),
+        package.public_shares_at(NESTED_POSITION).unwrap(),
+        package.group_pubkey(),
+    );
+    signer.commit(session_id, message);
+    signer
+}
+
+/// Build the coordinator's round-2 request over a real inner round-1 set that
+/// the given signers actually hold nonces for.
+fn coordinator_request(
+    group: &Group,
+    session_id: [u8; 32],
+    message: &[u8],
+    signers: &mut [crate::signing::LocalSigner],
+) -> SigningRequest {
+    let commitments: Vec<InnerCommitment> = signers
+        .iter_mut()
+        .map(|s| s.commit(session_id, message))
+        .collect();
+    let nested_commitment =
+        crate::signing::nested_commitment_pair(&session_id, &commitments).unwrap();
+    let out = crate::client::Round1Output {
+        session_id,
+        commitments,
+        nested_commitment,
+    };
+    let outer = crate::client::OuterRound {
+        group_pubkey: group.group_pubkey,
+        nested_index: NESTED_POSITION,
+        other_commitments: Vec::new(),
+        epoch: EPOCH,
+        manifest_hash: group.roster.hash(),
+    };
+    crate::client::build_request(&out, &outer, message, (1..=N).collect()).unwrap()
+}
+
+/// M-4: the outer group key comes from this node's key package. A coordinator
+/// that substitutes `Y'` gets a self-consistent package — `from_coordinator_checked`
+/// recomputes rho, c and lambda *under the supplied Y* — so nothing downstream
+/// catches it. This does.
+#[test]
+fn a_request_naming_another_group_key_is_refused() {
+    let group = build_group();
+    let message = b"release escrow 42".as_slice();
+    let session_id = [0x21u8; 32];
+
+    let mut signers: Vec<crate::signing::LocalSigner> = (0..N as usize)
+        .map(|k| local_signer(&group, k, session_id, message))
+        .collect();
+    let honest = coordinator_request(&group, session_id, message, &mut signers);
+
+    // The honest request signs.
+    assert!(signers[0].sign(&honest).is_ok());
+
+    // The same request with someone else's Y does not — and is refused before
+    // the nonces are consumed, so the substitution cannot be used to burn a
+    // holder's round.
+    let mut tampered = honest.clone();
+    let other_y = PallasPoint::generator().mul_scalar(&PallasScalar::from_u32(9));
+    tampered.group_pubkey = point_hex(&other_y);
+    assert!(matches!(
+        signers[1].sign(&tampered),
+        Err(crate::signing::SigningError::WrongGroupKey)
+    ));
+    // Still able to sign the honest request afterwards.
+    assert!(signers[1].sign(&honest).is_ok());
+}

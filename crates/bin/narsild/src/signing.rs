@@ -200,6 +200,11 @@ pub enum SigningError {
     PolicyRefused,
     #[error("session {0} was opened for a different message")]
     MessageChanged(String),
+    #[error(
+        "the request names an outer group key this node's key package does not: \
+         the challenge is bound to Y, so Y comes from the key package or nowhere"
+    )]
+    WrongGroupKey,
 }
 
 impl From<OsstError> for SigningError {
@@ -224,6 +229,13 @@ pub struct LocalSigner {
     /// `σ_k`, this node's share of the nested position's outer secret.
     /// `None` until a key package is loaded.
     share_scalar: Option<PallasScalar>,
+    /// The outer group public key from THIS node's key package (M-4). A
+    /// request naming a different `Y` is refused: the challenge is
+    /// `c = H(R ‖ Y ‖ m)`, so a coordinator free to choose `Y` is a
+    /// coordinator free to choose `c` over a message the node approved, which
+    /// is exactly the degree of freedom the ROS literature is about. `Y` is
+    /// public data, but public is not the same as locally anchored.
+    group_pubkey: Option<PallasPoint>,
     /// `P_j = σ_j·G` for every inner holder, for share verification.
     public_shares: Vec<(u32, PallasPoint)>,
     /// Live nonces, one per session. `InnerNonces` is not `Clone` and zeroizes
@@ -239,6 +251,7 @@ impl LocalSigner {
         manifest_hash: [u8; 32],
         share_scalar: Option<PallasScalar>,
         public_shares: Vec<(u32, PallasPoint)>,
+        group_pubkey: Option<PallasPoint>,
     ) -> Self {
         Self {
             holder_index,
@@ -246,15 +259,22 @@ impl LocalSigner {
             epoch,
             manifest_hash,
             share_scalar,
+            group_pubkey,
             public_shares,
             nonces: BTreeMap::new(),
         }
     }
 
     /// Install share material from a key package.
-    pub fn install(&mut self, share: PallasScalar, public_shares: Vec<(u32, PallasPoint)>) {
+    pub fn install(
+        &mut self,
+        share: PallasScalar,
+        public_shares: Vec<(u32, PallasPoint)>,
+        group_pubkey: Option<PallasPoint>,
+    ) {
         self.share_scalar = Some(share);
         self.public_shares = public_shares;
+        self.group_pubkey = group_pubkey;
     }
 
     /// Whether this node can sign at all.
@@ -302,6 +322,16 @@ impl LocalSigner {
             });
         }
         let share_scalar = self.share_scalar.ok_or(SigningError::NoShare)?;
+        let group_pubkey = self.group_pubkey.ok_or(SigningError::NoShare)?;
+
+        // M-4: before anything is consumed. `from_coordinator_checked` below
+        // recomputes rho, c and lambda *using the supplied Y*, so a
+        // substituted Y yields a self-consistent package that passes every
+        // other check.
+        if crate::codec::point_from_hex(&req.group_pubkey) != Some(group_pubkey) {
+            return Err(SigningError::WrongGroupKey);
+        }
+
         let nonces = self
             .nonces
             .remove(&req.session_id)
@@ -328,7 +358,10 @@ impl LocalSigner {
         let share = SecretShare::new(self.holder_index, share_scalar)?;
         let request = NestedSigningRequest {
             package: &parsed.package,
-            group_pubkey: &parsed.group_pubkey,
+            // The local value, not the parsed one — they are equal by the
+            // check above, and this is the one that stays right if that check
+            // is ever moved.
+            group_pubkey: &group_pubkey,
             nested_index: req.nested_index,
             session_id: req.session_id,
             inner_commitments: &parsed.inner_commitments,

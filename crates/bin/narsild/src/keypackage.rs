@@ -157,6 +157,17 @@ impl KeyPackage {
         Some(out)
     }
 
+    /// The outer group public key `Y = g^{a_0}`, from this node's own key
+    /// package.
+    ///
+    /// M-4: the coordinator's request carries a `group_pubkey` too, and a
+    /// node that uses that one concedes free choice of the challenge
+    /// `c = H(R ‖ Y ‖ m)` over a fixed message. This is the value to check it
+    /// against.
+    pub fn group_pubkey(&self) -> Option<PallasPoint> {
+        crate::codec::point_from_hex(self.coeff_commitments.first()?)
+    }
+
     /// The signing context's `manifest_hash`, decoded.
     pub fn manifest_hash(&self) -> [u8; 32] {
         let mut out = [0u8; 32];

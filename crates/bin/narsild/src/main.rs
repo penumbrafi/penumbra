@@ -431,7 +431,7 @@ async fn install_share(app: &AppState, package: &KeyPackage) {
             let mut signer = app.signing.signer.lock().await;
             signer.epoch = package.epoch;
             signer.manifest_hash = package.manifest_hash();
-            signer.install(share, public_shares);
+            signer.install(share, public_shares, package.group_pubkey());
             tracing::info!(
                 "share installed: holder={} nested_position={} epoch={}",
                 package.holder_index,
@@ -881,7 +881,7 @@ async fn main() {
         }
     };
 
-    let (epoch, manifest_hash, share, public_shares) = match &package {
+    let (epoch, manifest_hash, share, public_shares, group_pubkey) = match &package {
         Some(p) => {
             if p.holder_index != cli.index {
                 eprintln!(
@@ -895,6 +895,7 @@ async fn main() {
                 p.manifest_hash(),
                 p.share_at(cli.nested_position),
                 p.public_shares_at(cli.nested_position).unwrap_or_default(),
+                p.group_pubkey(),
             )
         }
         None => {
@@ -902,7 +903,7 @@ async fn main() {
                 "no key package in {}; this node can take part in a DKG but cannot sign",
                 cli.data_dir.display()
             );
-            (0, roster.hash(), None, Vec::new())
+            (0, roster.hash(), None, Vec::new(), None)
         }
     };
 
@@ -923,6 +924,7 @@ async fn main() {
         manifest_hash,
         share,
         public_shares,
+        group_pubkey,
     );
     let signing = SigningService::new(signer, cli.threshold as usize, peers.clone(), policy);
 
