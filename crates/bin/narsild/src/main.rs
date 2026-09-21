@@ -60,10 +60,24 @@ use tokio::sync::Mutex;
 // App state
 // ---------------------------------------------------------------------------
 
+/// A proposal this node has seen, and who has approved it (M-3).
+#[derive(Default)]
+struct ProposalRecord {
+    proposal: Option<dkg::DkgProposal>,
+    approvals: std::collections::BTreeSet<u32>,
+    started: bool,
+}
+
 #[derive(Clone)]
 struct AppState {
     signing: SigningService,
     dkg_ceremony: Arc<Mutex<Option<dkg::DkgCeremony>>>,
+    /// Proposals by digest. Bounded by the roster: a member can propose, and
+    /// only a member.
+    proposals: Arc<Mutex<std::collections::BTreeMap<[u8; 32], ProposalRecord>>>,
+    /// Whether this node's operator has consented to replacing an existing key
+    /// package.
+    allow_rotation: bool,
     peers: PeerSet,
     auth: Arc<Authenticator>,
     identity: Arc<NodeIdentity>,
@@ -82,6 +96,9 @@ struct AppState {
 /// through one function, which is what makes that change a one-line change.
 /// The largest request body any endpoint accepts.
 const MAX_BODY_BYTES: usize = 1 << 20;
+
+/// How many DKG proposals this node will hold at once.
+const MAX_PROPOSALS: usize = 16;
 
 fn err(msg: impl std::fmt::Display) -> Response {
     let text = msg.to_string();
@@ -331,11 +348,16 @@ fn accumulate_response<A: accumulator::Aggregate>(
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DkgInitRequest {
     /// The generation to produce. Defaults to the loaded key package's epoch
     /// plus one, or 1 on a node that has never run a DKG.
     #[serde(default)]
     epoch: Option<u64>,
+    /// Whether this ceremony is to replace an existing key package. A node
+    /// that holds one approves nothing else.
+    #[serde(default)]
+    rotate: bool,
 }
 
 /// Build a ceremony for `epoch`, refusing to go backwards.
@@ -487,6 +509,12 @@ async fn install_share(app: &AppState, package: &KeyPackage) {
     }
 }
 
+/// Propose a DKG (M-3).
+///
+/// This does not start anything. It publishes a proposal — epoch, attempt
+/// nonce, and whether an existing key package is to be replaced — which every
+/// member decides on for itself. The ceremony begins on each node when it has
+/// seen `inner_threshold` approvals of that exact proposal.
 async fn handle_dkg_init(
     State(app): State<AppState>,
     Json(envelope): Json<Envelope>,
@@ -495,48 +523,208 @@ async fn handle_dkg_init(
         Ok(v) => v,
         Err(r) => return r,
     };
-    tracing::info!("DKG init requested by roster member {}", sender);
+
     let epoch = match req.epoch {
         Some(e) => e,
         None => next_epoch(&app).await,
     };
-
-    // M-15: a fresh attempt nonce, so a re-run at this epoch is a different
-    // ceremony with a different session id and prologue.
     let mut ceremony_nonce = [0u8; 32];
     rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut ceremony_nonce);
 
-    let ceremony = match new_ceremony(&app, epoch, ceremony_nonce).await {
+    let proposal = dkg::DkgProposal {
+        epoch,
+        ceremony_nonce,
+        rotate: req.rotate,
+        roster_hash: hex::encode(app.roster.hash()),
+    };
+    tracing::info!(
+        "DKG proposed by roster member {}: epoch {}, rotate={}",
+        sender,
+        epoch,
+        req.rotate
+    );
+
+    app.peers.broadcast("/dkg/propose", &proposal);
+    consider_proposal(&app, &proposal).await
+}
+
+/// Whether this node approves a proposal.
+///
+/// The one rule that matters: a node holding a key package approves nothing
+/// that does not say `rotate: true`, and approves a rotation only if its own
+/// operator has consented with `--allow-rotation`. Everything else about a DKG
+/// is recoverable; overwriting the shares is not.
+async fn approves(app: &AppState, proposal: &dkg::DkgProposal) -> Result<(), &'static str> {
+    let current = app.signing.signer.lock().await.epoch;
+    let have_package = matches!(KeyPackage::load(&app.data_dir), Ok(Some(_)));
+    dkg::may_approve(
+        proposal,
+        &hex::encode(app.roster.hash()),
+        current,
+        have_package,
+        app.allow_rotation,
+    )
+}
+
+/// Record a proposal, approve it if this node will, and start the ceremony if
+/// the threshold is met.
+async fn consider_proposal(app: &AppState, proposal: &dkg::DkgProposal) -> Response {
+    let digest = proposal.digest();
+
+    let approved = match approves(app, proposal).await {
+        Ok(()) => true,
+        Err(why) => {
+            tracing::warn!("not approving the DKG proposal: {}", why);
+            false
+        }
+    };
+
+    {
+        let mut proposals = app.proposals.lock().await;
+        // Bound the table: a roster of n members has no business holding more
+        // than a handful of live proposals (M-18).
+        if proposals.len() >= MAX_PROPOSALS && !proposals.contains_key(&digest) {
+            return err("too many open DKG proposals");
+        }
+        let record = proposals.entry(digest).or_default();
+        record.proposal = Some(proposal.clone());
+        if approved {
+            record.approvals.insert(app.holder_index);
+        }
+    }
+
+    if approved {
+        let approval = dkg::DkgApproval {
+            approver_index: app.holder_index,
+            proposal_digest: digest,
+        };
+        app.peers.broadcast("/dkg/approve", &approval);
+    }
+
+    maybe_start(app, &digest).await
+}
+
+/// Start the ceremony for a proposal once `inner_threshold` members approve it.
+async fn maybe_start(app: &AppState, digest: &[u8; 32]) -> Response {
+    let (proposal, approvals) = {
+        let proposals = app.proposals.lock().await;
+        match proposals.get(digest) {
+            Some(r) if !r.started => (r.proposal.clone(), r.approvals.len()),
+            Some(r) => (None, r.approvals.len()),
+            None => (None, 0),
+        }
+    };
+
+    let needed = app.inner_threshold as usize;
+    let proposal = match proposal {
+        Some(p) if approvals >= needed => p,
+        _ => {
+            return Json(response::DkgProposalResponse {
+                accepted: true,
+                approvals,
+                needed,
+                proposal_digest: Some(hex::encode(digest)),
+            })
+            .into_response()
+        }
+    };
+
+    let ceremony = match new_ceremony(app, proposal.epoch, proposal.ceremony_nonce).await {
         Ok(c) => c,
         Err(e) => return err(e),
     };
     let session_id = ceremony.session_id;
     let broadcast = ceremony.round1_broadcast();
 
-    let mut guard = app.dkg_ceremony.lock().await;
-    *guard = Some(ceremony);
-    if let Some(c) = guard.as_mut() {
-        if let Err(e) = c.receive_round1(&broadcast) {
-            return report_dkg(&app, e);
+    {
+        let mut guard = app.dkg_ceremony.lock().await;
+        if guard.is_some() {
+            return err("a DKG ceremony is already in progress on this node");
+        }
+        *guard = Some(ceremony);
+        if let Some(c) = guard.as_mut() {
+            if let Err(e) = c.receive_round1(&broadcast) {
+                return report_dkg(app, e);
+            }
         }
     }
-    app.peers.broadcast("/dkg/round1", &broadcast);
+    app.proposals
+        .lock()
+        .await
+        .entry(*digest)
+        .or_default()
+        .started = true;
 
+    app.peers.broadcast("/dkg/round1", &broadcast);
     tracing::info!(
-        "DKG initiated: epoch {}, {}-of-{} inner, outer threshold {}",
-        epoch,
+        "DKG started: epoch {}, session {}, {} approvals, {}-of-{} inner, outer \
+         threshold {}",
+        proposal.epoch,
+        hex::encode(session_id),
+        approvals,
         app.inner_threshold,
         app.roster.len(),
         app.outer_threshold
     );
+
     Json(DkgStartedResponse {
         status: "round1_broadcast",
-        epoch,
+        epoch: proposal.epoch,
         session_id: hex::encode(session_id),
         holder_index: app.holder_index,
         coefficients: broadcast.coefficients.len(),
     })
     .into_response()
+}
+
+/// A peer proposed a DKG.
+async fn handle_dkg_propose(
+    State(app): State<AppState>,
+    Json(envelope): Json<Envelope>,
+) -> Response {
+    let (sender, proposal): (u32, dkg::DkgProposal) =
+        match authed(&app, "/dkg/propose", &envelope) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    tracing::info!(
+        "roster member {} proposes a DKG for epoch {} (rotate={})",
+        sender,
+        proposal.epoch,
+        proposal.rotate
+    );
+    consider_proposal(&app, &proposal).await
+}
+
+/// A peer approved a proposal.
+async fn handle_dkg_approve(
+    State(app): State<AppState>,
+    Json(envelope): Json<Envelope>,
+) -> Response {
+    let (sender, approval): (u32, dkg::DkgApproval) =
+        match authed(&app, "/dkg/approve", &envelope) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    if let Err(r) = same_index(sender, approval.approver_index) {
+        return r;
+    }
+
+    {
+        let mut proposals = app.proposals.lock().await;
+        match proposals.get_mut(&approval.proposal_digest) {
+            Some(record) => {
+                record.approvals.insert(sender);
+            }
+            // An approval for a proposal this node has not seen. Not an error
+            // — the broadcasts race — but nothing to do with it either: a
+            // proposal is what carries the terms, and approvals are counted
+            // against terms this node has checked for itself.
+            None => return err("no such proposal"),
+        }
+    }
+
+    maybe_start(&app, &approval.proposal_digest).await
 }
 
 async fn handle_dkg_round1(
@@ -554,25 +742,11 @@ async fn handle_dkg_round1(
     if let Err(r) = same_index(sender, msg.dealer_index) {
         return r;
     }
+    // No auto-adoption (M-3). A forged round 1 used to start a ceremony on a
+    // peer-asserted epoch, and the honest nodes then ran a legitimate DKG that
+    // overwrote the key package. A ceremony starts from an approved proposal
+    // or not at all.
     let mut guard = app.dkg_ceremony.lock().await;
-
-    if guard.is_none() {
-        // A peer started the ceremony; adopt its epoch and publish ours.
-        let ceremony = match new_ceremony(&app, msg.epoch, msg.ceremony_nonce).await {
-            Ok(c) => c,
-            Err(e) => return err(e),
-        };
-        let ours = ceremony.round1_broadcast();
-        *guard = Some(ceremony);
-        if let Some(c) = guard.as_mut() {
-            if let Err(e) = c.receive_round1(&ours) {
-                return report_dkg(&app, e);
-            }
-        }
-        app.peers.broadcast("/dkg/round1", &ours);
-        tracing::info!("DKG auto-initiated from peer at epoch {}", msg.epoch);
-    }
-
     let complete = match guard.as_mut().map(|c| c.receive_round1(&msg)) {
         Some(Ok(c)) => c,
         Some(Err(e)) => return report_dkg(&app, e),
@@ -862,6 +1036,16 @@ struct Cli {
     #[arg(long)]
     outer_threshold: u32,
 
+    /// Consent to a DKG that replaces an existing key package.
+    ///
+    /// Without it this node approves a rotation proposal from nobody, which
+    /// means `t` compromised peers cannot talk the group into overwriting the
+    /// shares that hold the escrow. Turning it on is how a planned reshare
+    /// happens: the operator sets it, the group runs the ceremony, the
+    /// operator turns it off.
+    #[arg(long)]
+    allow_rotation: bool,
+
     /// Permit `--outer-threshold 1`. Development only: it makes this group's
     /// nested position a single point of compromise for the outer signature.
     #[arg(long)]
@@ -1055,6 +1239,8 @@ async fn main() {
     let state = AppState {
         signing,
         dkg_ceremony: Arc::new(Mutex::new(None)),
+        proposals: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+        allow_rotation: cli.allow_rotation,
         peers,
         auth: authenticator,
         identity,
@@ -1085,6 +1271,8 @@ async fn main() {
         .route("/sign/round2", axum::routing::post(handle_round2))
         .route("/sign/share", axum::routing::post(handle_share))
         .route("/dkg/init", axum::routing::post(handle_dkg_init))
+        .route("/dkg/propose", axum::routing::post(handle_dkg_propose))
+        .route("/dkg/approve", axum::routing::post(handle_dkg_approve))
         .route("/dkg/round1", axum::routing::post(handle_dkg_round1))
         .route("/dkg/echo", axum::routing::post(handle_dkg_echo))
         .route("/dkg/round2", axum::routing::post(handle_dkg_round2))

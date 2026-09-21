@@ -109,6 +109,93 @@ pub struct DkgRound1Broadcast {
     pub coefficients: Vec<DkgCommitmentMsg>,
 }
 
+/// A proposal to run a DKG (M-3).
+///
+/// A DKG overwrites the key package, and the key package is the only thing
+/// that can spend what the group holds. `POST /dkg/init {"epoch": N}` used to
+/// be enough, from anyone, and a forged `/dkg/round1` auto-started a ceremony
+/// on a peer-asserted epoch — the honest nodes then ran a perfectly legitimate
+/// DKG among themselves and wrote over the shares. For a Zcash escrow with no
+/// script recovery path, unspendable is permanent.
+///
+/// So a ceremony starts only when `t` roster members have signed the same
+/// proposal, and a node that already holds a key package approves nothing that
+/// does not say `rotate: true`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DkgProposal {
+    /// The generation to produce.
+    pub epoch: u64,
+    /// The attempt nonce this ceremony will run under (M-15).
+    #[serde(with = "crate::codec::bytes32")]
+    pub ceremony_nonce: [u8; 32],
+    /// Whether this proposal replaces an existing key package. A node holding
+    /// one refuses to approve a proposal that does not say so.
+    pub rotate: bool,
+    /// The proposer's roster fingerprint, hex.
+    pub roster_hash: String,
+}
+
+/// Domain separator for [`DkgProposal::digest`].
+pub const PROPOSAL_DOMAIN: &[u8] = b"narsild/dkg/proposal/v1";
+
+impl DkgProposal {
+    /// What members approve: every field, length-prefixed.
+    pub fn digest(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(PROPOSAL_DOMAIN);
+        h.update(self.epoch.to_le_bytes());
+        h.update(self.ceremony_nonce);
+        h.update([u8::from(self.rotate)]);
+        h.update((self.roster_hash.len() as u64).to_le_bytes());
+        h.update(self.roster_hash.as_bytes());
+        h.finalize().into()
+    }
+}
+
+/// Whether a node in the given state approves a proposal (M-3).
+///
+/// A pure function of the node's own state, so every member reaches its
+/// verdict the same way and the rule can be read in one place. The rule that
+/// matters: a node holding a key package approves nothing that does not say
+/// `rotate: true`, and approves a rotation only with its operator's standing
+/// consent. Everything else about a DKG is recoverable; overwriting the shares
+/// that hold the escrow is not.
+pub fn may_approve(
+    proposal: &DkgProposal,
+    our_roster_hash_hex: &str,
+    current_epoch: u64,
+    have_key_package: bool,
+    allow_rotation: bool,
+) -> Result<(), &'static str> {
+    if proposal.roster_hash != our_roster_hash_hex {
+        return Err("proposal is for a different roster");
+    }
+    if proposal.epoch <= current_epoch {
+        return Err("proposal does not advance the epoch");
+    }
+    if have_key_package && !proposal.rotate {
+        return Err("this node holds a key package and the proposal is not a rotation");
+    }
+    if proposal.rotate && !allow_rotation {
+        return Err("this node is not configured to replace its key package");
+    }
+    Ok(())
+}
+
+/// One member's approval of a proposal.
+///
+/// The approval *is* the signed envelope that carries it: the envelope binds
+/// the body to the sender's roster identity, this roster and this endpoint.
+/// The body names what is being approved.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DkgApproval {
+    pub approver_index: u32,
+    #[serde(with = "crate::codec::bytes32")]
+    pub proposal_digest: [u8; 32],
+}
+
 /// One sealed sub-share: the Noise_K message and the coefficient it belongs
 /// to. The scalar is inside the ciphertext and appears nowhere else.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1148,6 +1235,52 @@ impl DkgCeremony {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn proposal(epoch: u64, rotate: bool) -> DkgProposal {
+        DkgProposal {
+            epoch,
+            ceremony_nonce: [3u8; 32],
+            rotate,
+            roster_hash: hex::encode([7u8; 32]),
+        }
+    }
+
+    /// M-3: a node holding a key package approves nothing that is not an
+    /// explicit, operator-consented rotation.
+    #[test]
+    fn a_node_holding_a_key_package_only_approves_a_consented_rotation() {
+        let ours = hex::encode([7u8; 32]);
+
+        // A node with no key package: an ordinary first ceremony.
+        assert!(may_approve(&proposal(1, false), &ours, 0, false, false).is_ok());
+
+        // A node that holds one: a proposal that is not a rotation is refused,
+        // and a rotation is refused without the operator's consent.
+        assert!(may_approve(&proposal(2, false), &ours, 1, true, false).is_err());
+        assert!(may_approve(&proposal(2, true), &ours, 1, true, false).is_err());
+        assert!(may_approve(&proposal(2, true), &ours, 1, true, true).is_ok());
+
+        // Backwards, and from another roster.
+        assert!(may_approve(&proposal(1, true), &ours, 1, true, true).is_err());
+        assert!(may_approve(&proposal(2, true), &hex::encode([9u8; 32]), 1, true, true).is_err());
+    }
+
+    /// The digest covers every term, so an approval of one proposal is not an
+    /// approval of another.
+    #[test]
+    fn the_proposal_digest_covers_every_term() {
+        let base = proposal(2, false).digest();
+        assert_ne!(base, proposal(3, false).digest());
+        assert_ne!(base, proposal(2, true).digest());
+
+        let mut other_nonce = proposal(2, false);
+        other_nonce.ceremony_nonce = [4u8; 32];
+        assert_ne!(base, other_nonce.digest());
+
+        let mut other_roster = proposal(2, false);
+        other_roster.roster_hash = hex::encode([8u8; 32]);
+        assert_ne!(base, other_roster.digest());
+    }
 
     /// The round-2 wire type refuses the shape the vulnerable narsild used.
     ///
