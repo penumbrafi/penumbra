@@ -71,10 +71,18 @@ use tokio::sync::Mutex;
 // ---------------------------------------------------------------------------
 
 /// One inner holder's round-1 nonce commitments. Public; broadcast.
+///
+/// `message_hex` rides along so that a node asked to join a session can put
+/// the message past its [`crate::policy::SigningPolicy`] *before* it samples
+/// nonces (M-2, M-18). A commitment round is not free: it produces live secret
+/// nonce material, and doing that for any session an unknown party announces
+/// is both a signing-oracle precondition and an unbounded allocation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InnerCommitment {
     pub session_id: [u8; 32],
+    /// The application message this session is for, hex.
+    pub message_hex: String,
     pub holder_index: u32,
     /// `D_k`, canonical compressed, hex.
     pub hiding: String,
@@ -188,6 +196,10 @@ pub enum SigningError {
     Malformed(&'static str),
     #[error("inner shares rejected from holders {0:?}")]
     BadShares(Vec<u32>),
+    #[error("the local signing policy does not approve this message")]
+    PolicyRefused,
+    #[error("session {0} was opened for a different message")]
+    MessageChanged(String),
 }
 
 impl From<OsstError> for SigningError {
@@ -256,12 +268,13 @@ impl LocalSigner {
     }
 
     /// Round 1: sample nonces for `session_id` and publish the commitments.
-    pub fn commit(&mut self, session_id: [u8; 32]) -> InnerCommitment {
+    pub fn commit(&mut self, session_id: [u8; 32], message: &[u8]) -> InnerCommitment {
         let mut rng = rand_core::OsRng;
         let (nonces, commitments) =
             nested::inner_commit::<PallasPoint, _>(self.holder_index, session_id, &mut rng);
         let wire = InnerCommitment {
             session_id,
+            message_hex: hex::encode(message),
             holder_index: self.holder_index,
             hiding: point_hex(&commitments.hiding),
             binding: point_hex(&commitments.binding),
@@ -405,6 +418,12 @@ pub struct SigningService {
     pub round2: ThresholdAccumulator<[u8; 32], InnerShare, ShareList>,
     pub signer: Arc<Mutex<LocalSigner>>,
     pub peers: PeerSet,
+    /// The message each session was opened for, as first seen. A session's
+    /// message never changes: round 2 must be for the message round 1's
+    /// nonces were sampled under, and the policy approved.
+    pub approved: Arc<Mutex<BTreeMap<[u8; 32], Vec<u8>>>>,
+    /// What this node is willing to sign.
+    pub policy: Arc<dyn crate::policy::SigningPolicy>,
     /// The round-2 request per session, as first seen.
     pub requests: Arc<Mutex<BTreeMap<[u8; 32], SigningRequest>>>,
     /// `z_nested` per session, once a verified quorum has been aggregated.
@@ -418,6 +437,8 @@ impl Clone for SigningService {
             round2: self.round2.clone(),
             signer: self.signer.clone(),
             peers: self.peers.clone(),
+            approved: self.approved.clone(),
+            policy: self.policy.clone(),
             requests: self.requests.clone(),
             results: self.results.clone(),
         }
@@ -425,34 +446,70 @@ impl Clone for SigningService {
 }
 
 impl SigningService {
-    pub fn new(signer: LocalSigner, threshold: usize, peers: PeerSet) -> Self {
+    pub fn new(
+        signer: LocalSigner,
+        threshold: usize,
+        peers: PeerSet,
+        policy: Arc<dyn crate::policy::SigningPolicy>,
+    ) -> Self {
         Self {
             round1: ThresholdAccumulator::new(threshold),
             round2: ThresholdAccumulator::new(threshold),
             signer: Arc::new(Mutex::new(signer)),
             peers,
+            approved: Arc::new(Mutex::new(BTreeMap::new())),
+            policy,
             requests: Arc::new(Mutex::new(BTreeMap::new())),
             results: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
+    /// Record the message a session is for, refusing a change of message and
+    /// a message the policy does not approve.
+    ///
+    /// This is the gate in front of nonce sampling: a session that does not
+    /// get past it produces no secret state at all.
+    async fn open_session(&self, session_id: [u8; 32], message: &[u8]) -> Result<(), SigningError> {
+        let mut approved = self.approved.lock().await;
+        match approved.get(&session_id) {
+            Some(existing) if existing == message => Ok(()),
+            Some(_) => Err(SigningError::MessageChanged(hex::encode(session_id))),
+            None => {
+                if !self.policy.approve(message) {
+                    return Err(SigningError::PolicyRefused);
+                }
+                approved.insert(session_id, message.to_vec());
+                Ok(())
+            }
+        }
+    }
+
     /// Round 1: commit, accumulate locally, broadcast. Public data only.
-    pub async fn start_round1(&self, session_id: [u8; 32]) -> InnerCommitment {
+    pub async fn start_round1(
+        &self,
+        session_id: [u8; 32],
+        message: &[u8],
+    ) -> Result<InnerCommitment, SigningError> {
+        self.open_session(session_id, message).await?;
         self.round1
             .ensure_session(session_id, |c| c.to_vec())
             .await;
-        let commitment = self.signer.lock().await.commit(session_id);
+        let commitment = self.signer.lock().await.commit(session_id, message);
         let _ = self.round1.accumulate(&session_id, commitment.clone()).await;
         self.peers.broadcast("/sign/commitment", &commitment);
-        commitment
+        Ok(commitment)
     }
 
     /// Accept a peer's round-1 commitment, contributing our own if we have not.
     pub async fn receive_commitment(
         &self,
         commitment: InnerCommitment,
-    ) -> AccumulateResult<CommitmentList> {
+    ) -> Result<AccumulateResult<CommitmentList>, SigningError> {
         let session_id = commitment.session_id;
+        let message = hex::decode(&commitment.message_hex)
+            .map_err(|_| SigningError::Malformed("message_hex is not hex"))?;
+        self.open_session(session_id, &message).await?;
+
         self.round1
             .ensure_session(session_id, |c| c.to_vec())
             .await;
@@ -460,12 +517,12 @@ impl SigningService {
 
         let mut signer = self.signer.lock().await;
         if !signer.has_nonces(&session_id) {
-            let ours = signer.commit(session_id);
+            let ours = signer.commit(session_id, &message);
             drop(signer);
             let _ = self.round1.accumulate(&session_id, ours.clone()).await;
             self.peers.broadcast("/sign/commitment", &ours);
         }
-        result
+        Ok(result)
     }
 
     /// Round 2: produce our share, accumulate it, and pass the request on so
@@ -475,7 +532,23 @@ impl SigningService {
     /// peer re-derives everything that matters from it anyway.
     pub async fn start_round2(&self, req: SigningRequest) -> Result<InnerShare, SigningError> {
         let session_id = req.session_id;
-        self.requests.lock().await.insert(session_id, req.clone());
+        let message = hex::decode(&req.message_hex)
+            .map_err(|_| SigningError::Malformed("message_hex is not hex"))?;
+
+        // The message must be the one this session's nonces were sampled
+        // under, and the policy must still approve it. Both checks, in that
+        // order: a session opened for message A must not produce a share over
+        // message B even if B is separately approved.
+        self.open_session(session_id, &message).await?;
+
+        // First seen wins, as the doc comment always claimed. Overwriting the
+        // request lets a later caller swap the active set out from under an
+        // aggregation that is already collecting shares (M-18).
+        self.requests
+            .lock()
+            .await
+            .entry(session_id)
+            .or_insert_with(|| req.clone());
         self.round2
             .ensure_session(session_id, |s| s.to_vec())
             .await;

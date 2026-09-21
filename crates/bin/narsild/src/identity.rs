@@ -7,13 +7,34 @@
 //! serving as this node's long-term identity without the decryption key and
 //! the seed being the same value.
 //!
-//! The public half is what peers put in their roster. It is stable for the
-//! life of the data directory: rotating it means re-distributing the roster
-//! and re-running the DKG.
+//! The same seed also yields this node's **ed25519 signing key**, which is
+//! what authenticates its requests to its peers (M-2). The two keys are
+//! derived through HKDF-SHA256 from the one seed under distinct `info`
+//! strings, so neither can be computed from the other and a compromise of the
+//! sealing key is not a signing oracle:
+//!
+//! ```text
+//! x25519  = osst::sealed::x25519_secret_from_seed(seed)     [unchanged]
+//! ed25519 = HKDF-SHA256(ikm = seed, salt = IDENTITY_SALT,
+//!                       info = "narsild/identity/ed25519/v1")
+//! ```
+//!
+//! The X25519 derivation stays on osst's function deliberately: it is the key
+//! every existing roster already names, and changing it would invalidate every
+//! deployed roster for no security gain. The `info` strings are distinct by
+//! construction — osst's is its own domain — and the ed25519 one is explicit.
+//!
+//! Both public halves are what peers put in their roster. They are stable for
+//! the life of the data directory: rotating them means re-distributing the
+//! roster and re-running the DKG.
 
+use ed25519_dalek::SigningKey;
+use hkdf::Hkdf;
+use sha2::Sha256;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroize;
 
 /// File name of the identity seed inside the data directory.
 pub const IDENTITY_FILE: &str = "identity.key";
@@ -21,6 +42,12 @@ pub const IDENTITY_FILE: &str = "identity.key";
 /// Unix mode the seed file must have: owner read/write only.
 #[cfg(unix)]
 pub const IDENTITY_MODE: u32 = 0o600;
+
+/// HKDF salt for every key derived from the identity seed.
+pub const IDENTITY_SALT: &[u8] = b"narsild/identity/v1";
+
+/// HKDF info string for the ed25519 request-signing key.
+pub const ED25519_INFO: &[u8] = b"narsild/identity/ed25519/v1";
 
 /// A node's long-term identity.
 pub struct NodeIdentity {
@@ -82,6 +109,27 @@ impl NodeIdentity {
         osst::sealed::x25519_public_from_seed(&self.seed)
     }
 
+    /// This node's ed25519 request-signing key.
+    ///
+    /// Derived from the seed under its own HKDF `info`, so it is independent
+    /// of the sealing key: an attacker who obtains one cannot derive the
+    /// other, and neither is the seed.
+    pub fn ed25519_signing_key(&self) -> SigningKey {
+        let hk = Hkdf::<Sha256>::new(Some(IDENTITY_SALT), &self.seed);
+        let mut okm = [0u8; 32];
+        hk.expand(ED25519_INFO, &mut okm)
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        let key = SigningKey::from_bytes(&okm);
+        okm.zeroize();
+        key
+    }
+
+    /// This node's ed25519 public key — what goes in peers' rosters alongside
+    /// the X25519 one.
+    pub fn ed25519_public(&self) -> [u8; 32] {
+        self.ed25519_signing_key().verifying_key().to_bytes()
+    }
+
     #[cfg(unix)]
     fn check_mode(path: &Path) -> io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
@@ -139,6 +187,32 @@ mod tests {
         assert_ne!(id.x25519_public(), [3u8; 32]);
     }
 
+    /// The two keys come from one seed and from distinct `info` strings, so
+    /// neither is the other and neither is the seed.
+    #[test]
+    fn the_sealing_and_signing_keys_are_independent() {
+        let id = NodeIdentity::from_seed_for_test([3u8; 32]);
+        let signing = id.ed25519_signing_key();
+        assert_ne!(signing.to_bytes(), [3u8; 32]);
+        assert_ne!(signing.to_bytes(), id.x25519_secret());
+        assert_ne!(id.ed25519_public(), id.x25519_public());
+        // Deterministic: the same seed yields the same signing key.
+        assert_eq!(
+            signing.to_bytes(),
+            NodeIdentity::from_seed_for_test([3u8; 32])
+                .ed25519_signing_key()
+                .to_bytes()
+        );
+    }
+
+    /// A different seed is a different signing identity.
+    #[test]
+    fn different_seeds_give_different_signing_keys() {
+        let a = NodeIdentity::from_seed_for_test([1u8; 32]);
+        let b = NodeIdentity::from_seed_for_test([2u8; 32]);
+        assert_ne!(a.ed25519_public(), b.ed25519_public());
+    }
+
     #[test]
     fn an_identity_persists_across_loads() {
         let dir = std::env::temp_dir().join(format!("narsild-id-{}", std::process::id()));
@@ -146,6 +220,7 @@ mod tests {
         let first = NodeIdentity::load_or_create(&dir).unwrap();
         let again = NodeIdentity::load_or_create(&dir).unwrap();
         assert_eq!(first.x25519_public(), again.x25519_public());
+        assert_eq!(first.ed25519_public(), again.ed25519_public());
 
         #[cfg(unix)]
         {

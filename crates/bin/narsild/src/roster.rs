@@ -1,7 +1,18 @@
 //! The signed roster: who is in the group, and how to reach each of them.
 //!
 //! Every node is configured with the same index→peer map. A peer entry is
-//! `(index, x25519 public key, URL)`; the roster is the sorted list of them.
+//! `(index, URL, x25519 public key, ed25519 public key)`; the roster is the
+//! sorted list of them.
+//!
+//! # The two keys
+//!
+//! The X25519 key seals round-2 sub-shares to a recipient. The ed25519 key
+//! authenticates that member's *requests*: every mutating endpoint takes a
+//! signed envelope (see [`crate::auth`]), and the roster is where the public
+//! key that envelope is checked against comes from. Both are derived from that
+//! node's identity seed under distinct HKDF info strings, and both enter
+//! [`Roster::hash`] — a node that disagrees about either key disagrees about
+//! the manifest, and its signatures and sealed packages both stop verifying.
 //!
 //! # Why the roster is hashed
 //!
@@ -25,9 +36,15 @@
 //! (`osst::SigningContext`): the roster *is* the group's membership manifest,
 //! so a signature made under one roster is not valid under another.
 
+use ed25519_dalek::VerifyingKey;
 use osst::sealed::SealedRoster;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+/// Decode a 32-byte key from hex.
+fn key32(s: &str) -> Option<[u8; 32]> {
+    hex::decode(s.trim()).ok()?.as_slice().try_into().ok()
+}
 
 /// Domain tag for [`Roster::hash`].
 pub const ROSTER_DOMAIN: &[u8] = b"narsild/roster/v1";
@@ -42,8 +59,10 @@ pub struct Peer {
     pub index: u32,
     /// Base URL of that node's narsild, without a trailing slash.
     pub url: String,
-    /// That node's static X25519 public key.
+    /// That node's static X25519 public key — seals round-2 sub-shares to it.
     pub x25519_pub: [u8; 32],
+    /// That node's ed25519 public key — verifies its signed requests.
+    pub ed25519_pub: [u8; 32],
 }
 
 /// Errors from building or reading a roster.
@@ -57,9 +76,16 @@ pub enum RosterError {
     DuplicateIndex(u32),
     #[error("duplicate x25519 public key for indices {0} and {1}")]
     DuplicateKey(u32, u32),
+    #[error("duplicate ed25519 public key for indices {0} and {1}")]
+    DuplicateSigningKey(u32, u32),
     #[error("index {0} is not on the roster")]
     Unknown(u32),
-    #[error("malformed peer specification {0:?}: expected index=url=x25519_pubkey_hex")]
+    #[error("the ed25519 key for index {0} is not a valid point")]
+    BadSigningKey(u32),
+    #[error(
+        "malformed peer specification {0:?}: expected \
+         index=url=x25519_pubkey_hex=ed25519_pubkey_hex"
+    )]
     Malformed(String),
 }
 
@@ -93,37 +119,55 @@ impl Roster {
                 if members[i].x25519_pub == members[j].x25519_pub {
                     return Err(RosterError::DuplicateKey(members[i].index, members[j].index));
                 }
+                if members[i].ed25519_pub == members[j].ed25519_pub {
+                    return Err(RosterError::DuplicateSigningKey(
+                        members[i].index,
+                        members[j].index,
+                    ));
+                }
             }
         }
         Ok(Self { members })
     }
 
-    /// Parse a roster from `index=url=x25519_pubkey_hex` specifications.
+    /// Parse a roster from `index=url=x25519_pubkey_hex=ed25519_pubkey_hex`
+    /// specifications.
+    ///
+    /// The two keys are peeled off the *end*, not taken as fields 3 and 4 of a
+    /// left-to-right split: a URL may legitimately contain `=` (a query
+    /// string), and a parser that splits from the left silently truncates it —
+    /// which would put a different URL in the roster hash on different nodes.
     pub fn parse(specs: &[String]) -> Result<Self, RosterError> {
         let mut members = Vec::with_capacity(specs.len());
         for spec in specs {
-            let parts: Vec<&str> = spec.splitn(3, '=').collect();
-            if parts.len() != 3 {
+            let tail: Vec<&str> = spec.rsplitn(3, '=').collect();
+            if tail.len() != 3 {
                 return Err(RosterError::Malformed(spec.clone()));
             }
-            let index: u32 = parts[0]
+            // rsplitn yields right-to-left.
+            let ed25519_hex = tail[0];
+            let x25519_hex = tail[1];
+            let head = tail[2];
+
+            let (index_str, url) = head
+                .split_once('=')
+                .ok_or_else(|| RosterError::Malformed(spec.clone()))?;
+            let index: u32 = index_str
                 .trim()
                 .parse()
                 .map_err(|_| RosterError::Malformed(spec.clone()))?;
-            let url = parts[1].trim().trim_end_matches('/').to_string();
+            let url = url.trim().trim_end_matches('/').to_string();
             if url.is_empty() {
                 return Err(RosterError::Malformed(spec.clone()));
             }
-            let key_bytes =
-                hex::decode(parts[2].trim()).map_err(|_| RosterError::Malformed(spec.clone()))?;
-            let x25519_pub: [u8; 32] = key_bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| RosterError::Malformed(spec.clone()))?;
+            let x25519_pub = key32(x25519_hex).ok_or_else(|| RosterError::Malformed(spec.clone()))?;
+            let ed25519_pub =
+                key32(ed25519_hex).ok_or_else(|| RosterError::Malformed(spec.clone()))?;
             members.push(Peer {
                 index,
                 url,
                 x25519_pub,
+                ed25519_pub,
             });
         }
         Self::new(members)
@@ -163,10 +207,18 @@ impl Roster {
         for m in &self.members {
             h.update(m.index.to_le_bytes());
             h.update(m.x25519_pub);
+            h.update(m.ed25519_pub);
             h.update((m.url.len() as u64).to_le_bytes());
             h.update(m.url.as_bytes());
         }
         h.finalize().into()
+    }
+
+    /// The ed25519 verifying key of one member, for checking its signed
+    /// requests.
+    pub fn verifying_key(&self, index: u32) -> Result<VerifyingKey, RosterError> {
+        let peer = self.get(index)?;
+        VerifyingKey::from_bytes(&peer.ed25519_pub).map_err(|_| RosterError::BadSigningKey(index))
     }
 
     /// The ceremony session id for `epoch`: deterministic, so every node
@@ -201,6 +253,7 @@ mod tests {
             index,
             url: url.to_string(),
             x25519_pub: [key; 32],
+            ed25519_pub: [key.wrapping_add(0x80); 32],
         }
     }
 
@@ -233,6 +286,12 @@ mod tests {
         let mut other_key = three();
         other_key[1].x25519_pub = [0x77; 32];
         assert_ne!(base, Roster::new(other_key).unwrap().hash());
+
+        // The signing key is part of the manifest too: swapping who may
+        // authorize a request is a roster change.
+        let mut other_signing_key = three();
+        other_signing_key[1].ed25519_pub = [0x66; 32];
+        assert_ne!(base, Roster::new(other_signing_key).unwrap().hash());
 
         let mut other_index = three();
         other_index[2].index = 4;
@@ -289,18 +348,52 @@ mod tests {
             Roster::new(vec![peer(1, "http://a", 9), peer(2, "http://b", 9)]),
             Err(RosterError::DuplicateKey(1, 2))
         );
+
+        let mut shared_signing_key = vec![peer(1, "http://a", 1), peer(2, "http://b", 2)];
+        shared_signing_key[1].ed25519_pub = shared_signing_key[0].ed25519_pub;
+        assert_eq!(
+            Roster::new(shared_signing_key),
+            Err(RosterError::DuplicateSigningKey(1, 2))
+        );
     }
 
     #[test]
-    fn peers_parse_from_index_url_key_specs() {
+    fn peers_parse_from_index_url_two_key_specs() {
         let specs = vec![
-            format!("1=http://a:9200/={}", hex::encode([1u8; 32])),
-            format!("2=http://b:9200={}", hex::encode([2u8; 32])),
+            format!(
+                "1=http://a:9200/={}={}",
+                hex::encode([1u8; 32]),
+                hex::encode([0x81u8; 32])
+            ),
+            format!(
+                "2=http://b:9200={}={}",
+                hex::encode([2u8; 32]),
+                hex::encode([0x82u8; 32])
+            ),
         ];
         let r = Roster::parse(&specs).unwrap();
         assert_eq!(r.indices(), vec![1, 2]);
         assert_eq!(r.get(1).unwrap().url, "http://a:9200");
+        assert_eq!(r.get(2).unwrap().ed25519_pub, [0x82u8; 32]);
+
+        // The old three-field form no longer parses: a roster without signing
+        // keys cannot authenticate anything, and half-understanding it would
+        // put a key-shaped URL fragment in the manifest.
+        assert!(Roster::parse(&[format!("1=http://a={}", hex::encode([1u8; 32]))]).is_err());
         assert!(Roster::parse(&["1=http://a".to_string()]).is_err());
-        assert!(Roster::parse(&["1=http://a=zz".to_string()]).is_err());
+        assert!(Roster::parse(&["1=http://a=zz=ww".to_string()]).is_err());
+    }
+
+    /// A URL with an `=` in it survives parsing intact — the keys are peeled
+    /// off the right.
+    #[test]
+    fn a_url_containing_an_equals_sign_is_not_truncated() {
+        let spec = format!(
+            "3=http://h:9200/p?a=b={}={}",
+            hex::encode([3u8; 32]),
+            hex::encode([0x83u8; 32])
+        );
+        let r = Roster::parse(&[spec]).unwrap();
+        assert_eq!(r.get(3).unwrap().url, "http://h:9200/p?a=b");
     }
 }

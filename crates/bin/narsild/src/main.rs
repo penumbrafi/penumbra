@@ -20,12 +20,14 @@
 //!   uses `broadcast` is public by construction.
 
 mod accumulator;
+mod auth;
 mod broadcast;
 pub mod client;
 mod codec;
 mod dkg;
 mod identity;
 mod keypackage;
+mod policy;
 mod response;
 mod roster;
 mod signing;
@@ -33,6 +35,7 @@ mod signing;
 mod tests;
 
 use accumulator::AccumulateResult;
+use auth::{Authenticator, Envelope};
 use broadcast::PeerSet;
 use identity::NodeIdentity;
 use keypackage::KeyPackage;
@@ -46,6 +49,7 @@ use response::{
     Round2Response, RoundStatus, SigningStatusResponse,
 };
 use clap::Parser;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -60,6 +64,7 @@ struct AppState {
     signing: SigningService,
     dkg_ceremony: Arc<Mutex<Option<dkg::DkgCeremony>>>,
     peers: PeerSet,
+    auth: Arc<Authenticator>,
     identity: Arc<NodeIdentity>,
     roster: Arc<Roster>,
     data_dir: PathBuf,
@@ -74,11 +79,43 @@ struct AppState {
 /// The detail goes to the local log; the peer gets a code. Until M-17 lands
 /// properly the code is still the error text, but every call site now goes
 /// through one function, which is what makes that change a one-line change.
+/// The largest request body any endpoint accepts.
+const MAX_BODY_BYTES: usize = 1 << 20;
+
 fn err(msg: impl std::fmt::Display) -> Response {
     let text = msg.to_string();
     tracing::warn!("request rejected: {}", text);
     (axum::http::StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "rejected" }))
         .into_response()
+}
+
+/// Verify an envelope for `path` and parse its body (M-2).
+///
+/// Every mutating endpoint goes through here. The read-only ones — `/health`,
+/// `/sign/status`, `/dkg/status` — do not, because after M-1 they carry only
+/// public data; that is a property of `response.rs`, enforced by a test there,
+/// rather than a promise made here.
+#[allow(clippy::result_large_err)] // the error *is* the HTTP response
+fn authed<T: DeserializeOwned>(
+    app: &AppState,
+    path: &str,
+    envelope: &Envelope,
+) -> Result<(u32, T), Response> {
+    app.auth.open::<T>(path, envelope).map_err(err)
+}
+
+/// Refuse a message whose own index does not match the envelope that carried
+/// it: without this, an authenticated member can post a round-1 commitment,
+/// a complaint or a share "from" another member (M-7).
+#[allow(clippy::result_large_err)] // the error *is* the HTTP response
+fn same_index(sender: u32, claimed: u32) -> Result<(), Response> {
+    if sender == claimed {
+        Ok(())
+    } else {
+        Err(err(format!(
+            "member {sender} sent a message claiming to be from member {claimed}"
+        )))
+    }
 }
 
 /// Report a DKG failure, telling the other members if it was a complaint.
@@ -100,8 +137,12 @@ fn report_dkg(app: &AppState, e: dkg::DkgError) -> Response {
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Round1Request {
     session_id: [u8; 32],
+    /// The application message this session is for, hex. The local policy
+    /// sees this before a single nonce is sampled.
+    message_hex: String,
 }
 
 #[derive(Deserialize)]
@@ -111,9 +152,20 @@ struct StatusRequest {
 
 async fn handle_round1(
     State(app): State<AppState>,
-    Json(req): Json<Round1Request>,
+    Json(envelope): Json<Envelope>,
 ) -> Response {
-    let commitment = app.signing.start_round1(req.session_id).await;
+    let (_sender, req): (u32, Round1Request) = match authed(&app, "/sign/round1", &envelope) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let message = match hex::decode(&req.message_hex) {
+        Ok(m) => m,
+        Err(_) => return err("message_hex is not hex"),
+    };
+    let commitment = match app.signing.start_round1(req.session_id, &message).await {
+        Ok(c) => c,
+        Err(e) => return err(e),
+    };
     let (collected, threshold, _) = app
         .signing
         .round1
@@ -132,10 +184,21 @@ async fn handle_round1(
 
 async fn handle_commitment(
     State(app): State<AppState>,
-    Json(commitment): Json<InnerCommitment>,
+    Json(envelope): Json<Envelope>,
 ) -> Response {
+    let (sender, commitment): (u32, InnerCommitment) =
+        match authed(&app, "/sign/commitment", &envelope) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    if let Err(r) = same_index(sender, commitment.holder_index) {
+        return r;
+    }
     let session_id = commitment.session_id;
-    let result = app.signing.receive_commitment(commitment).await;
+    let result = match app.signing.receive_commitment(commitment).await {
+        Ok(r) => r,
+        Err(e) => return err(e),
+    };
     let (collected, threshold, _) = app
         .signing
         .round1
@@ -195,8 +258,12 @@ async fn handle_status(
 
 async fn handle_round2(
     State(app): State<AppState>,
-    Json(req): Json<SigningRequest>,
+    Json(envelope): Json<Envelope>,
 ) -> Response {
+    let (_sender, req): (u32, SigningRequest) = match authed(&app, "/sign/round2", &envelope) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
     let session_id = req.session_id;
     match app.signing.start_round2(req).await {
         Ok(share) => {
@@ -221,8 +288,15 @@ async fn handle_round2(
 
 async fn handle_share(
     State(app): State<AppState>,
-    Json(share): Json<InnerShare>,
+    Json(envelope): Json<Envelope>,
 ) -> Response {
+    let (sender, share): (u32, InnerShare) = match authed(&app, "/sign/share", &envelope) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Err(r) = same_index(sender, share.holder_index) {
+        return r;
+    }
     let session_id = share.session_id;
     let result = app.signing.receive_share(share).await;
     let (collected, threshold, _) = app
@@ -371,8 +445,13 @@ async fn install_share(app: &AppState, package: &KeyPackage) {
 
 async fn handle_dkg_init(
     State(app): State<AppState>,
-    Json(req): Json<DkgInitRequest>,
+    Json(envelope): Json<Envelope>,
 ) -> Response {
+    let (sender, req): (u32, DkgInitRequest) = match authed(&app, "/dkg/init", &envelope) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    tracing::info!("DKG init requested by roster member {}", sender);
     let epoch = match req.epoch {
         Some(e) => e,
         None => next_epoch(&app).await,
@@ -412,8 +491,19 @@ async fn handle_dkg_init(
 
 async fn handle_dkg_round1(
     State(app): State<AppState>,
-    Json(msg): Json<dkg::DkgRound1Broadcast>,
+    Json(envelope): Json<Envelope>,
 ) -> Response {
+    let (sender, msg): (u32, dkg::DkgRound1Broadcast) =
+        match authed(&app, "/dkg/round1", &envelope) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    // M-7: a round-1 package for index i must come from roster member i.
+    // Without this an attacker squats an honest dealer's slot, its genuine
+    // broadcast is dropped first-write-wins, and round 2 frames it.
+    if let Err(r) = same_index(sender, msg.dealer_index) {
+        return r;
+    }
     let mut guard = app.dkg_ceremony.lock().await;
 
     if guard.is_none() {
@@ -461,8 +551,15 @@ async fn handle_dkg_round1(
 
 async fn handle_dkg_round2(
     State(app): State<AppState>,
-    Json(msg): Json<dkg::DkgRound2Msg>,
+    Json(envelope): Json<Envelope>,
 ) -> Response {
+    let (sender, msg): (u32, dkg::DkgRound2Msg) = match authed(&app, "/dkg/round2", &envelope) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Err(r) = same_index(sender, msg.dealer_index) {
+        return r;
+    }
     let mut guard = app.dkg_ceremony.lock().await;
     let complete = match guard.as_mut().map(|c| c.receive_round2(&msg)) {
         Some(Ok(c)) => c,
@@ -500,8 +597,16 @@ async fn handle_dkg_round2(
 /// without one member produces a key that member does not hold.
 async fn handle_dkg_complaint(
     State(app): State<AppState>,
-    Json(complaint): Json<dkg::Complaint>,
+    Json(envelope): Json<Envelope>,
 ) -> Response {
+    let (sender, complaint): (u32, dkg::Complaint) =
+        match authed(&app, "/dkg/complaint", &envelope) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    if let Err(r) = same_index(sender, complaint.complainant_index) {
+        return r;
+    }
     let mut guard = app.dkg_ceremony.lock().await;
     match guard.as_mut() {
         Some(c) => match c.receive_complaint(&complaint) {
@@ -568,7 +673,15 @@ async fn handle_dkg_status(State(app): State<AppState>) -> Response {
 
 /// Re-install the persisted key package — after an operator has replaced it,
 /// or to move this node to a different nested position without a restart.
-async fn handle_dkg_activate(State(app): State<AppState>) -> Response {
+async fn handle_dkg_activate(
+    State(app): State<AppState>,
+    Json(envelope): Json<Envelope>,
+) -> Response {
+    let (sender, _req): (u32, serde_json::Value) = match authed(&app, "/dkg/activate", &envelope) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    tracing::info!("key package re-activation requested by roster member {}", sender);
     match KeyPackage::load(&app.data_dir) {
         Ok(Some(package)) => {
             install_share(&app, &package).await;
@@ -596,7 +709,7 @@ async fn handle_health(State(app): State<AppState>) -> Response {
         has_share: signer.has_share(),
         roster_hash: hex::encode(app.roster.hash()),
         x25519_pub: hex::encode(app.identity.x25519_public()),
-        ed25519_pub: String::new(),
+        ed25519_pub: hex::encode(app.identity.ed25519_public()),
         peers: app.peers.peer_count(),
     })
     .into_response()
@@ -610,7 +723,11 @@ async fn handle_health(State(app): State<AppState>) -> Response {
 #[command(name = "narsild", about = "Narsil sidecar for Penumbra validators")]
 struct Cli {
     /// Listen address.
-    #[arg(long, default_value = "0.0.0.0:9200")]
+    ///
+    /// Loopback by default. The endpoints are authenticated (M-2), but a
+    /// daemon holding escrow authority should not be reachable from the world
+    /// because it has an extra check; binding wider is an explicit decision.
+    #[arg(long, default_value = "127.0.0.1:9200")]
     bind: String,
 
     /// This node's 1-indexed holder index. Must appear in --peer.
@@ -621,10 +738,11 @@ struct Cli {
     #[arg(long, default_value = "./narsild-data")]
     data_dir: PathBuf,
 
-    /// A roster entry: `index=url=x25519_pubkey_hex`. Repeat for every member
-    /// of the group, this node included. Every node must be given the same
-    /// set: its hash goes into the DKG prologue and the signing context.
-    #[arg(long = "peer", value_name = "INDEX=URL=PUBKEY")]
+    /// A roster entry: `index=url=x25519_pubkey_hex=ed25519_pubkey_hex`.
+    /// Repeat for every member of the group, this node included. Every node
+    /// must be given the same set: its hash goes into the DKG prologue, the
+    /// signing context and every request signature.
+    #[arg(long = "peer", value_name = "INDEX=URL=X25519=ED25519")]
     peers: Vec<String>,
 
     /// Inner FROST threshold.
@@ -633,15 +751,35 @@ struct Cli {
 
     /// Outer FROST threshold — the number of coefficients of the nested
     /// position's outer polynomial.
-    #[arg(long, default_value_t = 1)]
+    ///
+    /// No default, and at least 2 unless `--dev-single-signer` is given. At 1
+    /// the outer polynomial is a constant, the nested position alone completes
+    /// the outer signature, and the "threshold" in the outer group is
+    /// decorative (M-2).
+    #[arg(long)]
     outer_threshold: u32,
+
+    /// Permit `--outer-threshold 1`. Development only: it makes this group's
+    /// nested position a single point of compromise for the outer signature.
+    #[arg(long)]
+    dev_single_signer: bool,
+
+    /// A file of approved message digests, one 32-byte hex digest per line
+    /// (`#` comments allowed) — see `policy::message_digest`.
+    ///
+    /// Without it the node runs a deny-all policy and signs nothing. The
+    /// production policy is the bridge component: it reconstructs the expected
+    /// message from the withdrawal event on this validator's own `pd`.
+    #[arg(long, value_name = "PATH")]
+    dev_allow_message_digests: Option<PathBuf>,
 
     /// The nested position's index in the outer signing set.
     #[arg(long, default_value_t = 1)]
     nested_position: u32,
 
-    /// Print this node's X25519 public key and exit — what peers put in their
-    /// roster. Generates the identity if there is not one yet.
+    /// Print this node's roster keys and exit — `x25519 ed25519`, which is
+    /// what peers put in their `--peer` entry for this node. Generates the
+    /// identity if there is not one yet.
     #[arg(long)]
     print_identity: bool,
 }
@@ -666,15 +804,43 @@ async fn main() {
     };
 
     if cli.print_identity {
-        println!("{}", hex::encode(identity.x25519_public()));
+        println!(
+            "{}={}",
+            hex::encode(identity.x25519_public()),
+            hex::encode(identity.ed25519_public())
+        );
         return;
     }
+
+    if cli.outer_threshold == 0 || (cli.outer_threshold < 2 && !cli.dev_single_signer) {
+        eprintln!(
+            "--outer-threshold {} is not a threshold: the nested position alone would \
+             complete the outer signature. Use 2 or more, or pass --dev-single-signer \
+             if this is a development group.",
+            cli.outer_threshold
+        );
+        std::process::exit(1);
+    }
+
+    let policy: Arc<dyn policy::SigningPolicy> = match &cli.dev_allow_message_digests {
+        Some(path) => match policy::AllowList::from_file(path) {
+            Ok(p) => Arc::new(p),
+            Err(e) => {
+                eprintln!("cannot read the signing policy: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => Arc::new(policy::DenyAll),
+    };
 
     let roster = match Roster::parse(&cli.peers) {
         Ok(r) => Arc::new(r),
         Err(e) => {
             eprintln!("bad roster: {e}");
-            eprintln!("expected --peer INDEX=URL=X25519_PUBKEY_HEX, once per member");
+                eprintln!(
+                "expected --peer INDEX=URL=X25519_PUBKEY_HEX=ED25519_PUBKEY_HEX, \
+                 once per member"
+            );
             std::process::exit(1);
         }
     };
@@ -683,15 +849,19 @@ async fn main() {
     // hold, and every peer's package to it would be undecryptable. Catch it
     // here rather than at round 2.
     match roster.get(cli.index) {
-        Ok(me) if me.x25519_pub == identity.x25519_public() => {}
+        Ok(me)
+            if me.x25519_pub == identity.x25519_public()
+                && me.ed25519_pub == identity.ed25519_public() => {}
         Ok(me) => {
             eprintln!(
-                "roster entry for index {} carries x25519 key {}, but this node's identity \
-                 at {} is {}",
+                "roster entry for index {} carries keys {}={}, but this node's identity \
+                 at {} yields {}={}",
                 cli.index,
                 hex::encode(me.x25519_pub),
+                hex::encode(me.ed25519_pub),
                 identity.path().display(),
-                hex::encode(identity.x25519_public())
+                hex::encode(identity.x25519_public()),
+                hex::encode(identity.ed25519_public())
             );
             std::process::exit(1);
         }
@@ -736,7 +906,16 @@ async fn main() {
         }
     };
 
-    let peers = PeerSet::new(roster.clone(), cli.index);
+    let authenticator = match Authenticator::new(roster.clone(), &identity, cli.index, &cli.data_dir)
+    {
+        Ok(a) => Arc::new(a),
+        Err(e) => {
+            eprintln!("cannot open the replay store: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let peers = PeerSet::new(roster.clone(), cli.index, authenticator.clone());
     let signer = LocalSigner::new(
         cli.index,
         cli.nested_position,
@@ -745,12 +924,13 @@ async fn main() {
         share,
         public_shares,
     );
-    let signing = SigningService::new(signer, cli.threshold as usize, peers.clone());
+    let signing = SigningService::new(signer, cli.threshold as usize, peers.clone(), policy);
 
     let state = AppState {
         signing,
         dkg_ceremony: Arc::new(Mutex::new(None)),
         peers,
+        auth: authenticator,
         identity,
         roster: roster.clone(),
         data_dir: cli.data_dir.clone(),
@@ -761,13 +941,16 @@ async fn main() {
     };
 
     tracing::info!(
-        "narsild starting: holder={} of {}, threshold={}, epoch={}, roster={}",
+        "narsild starting: holder={} of {}, threshold={}, outer_threshold={}, epoch={}, \
+         roster={}",
         cli.index,
         roster.len(),
         cli.threshold,
+        cli.outer_threshold,
         epoch,
         hex::encode(roster.hash())
     );
+    tracing::info!("signing policy: {}", state.signing.policy.describe());
 
     let app = Router::new()
         .route("/sign/round1", axum::routing::post(handle_round1))
@@ -782,6 +965,9 @@ async fn main() {
         .route("/dkg/activate", axum::routing::post(handle_dkg_activate))
         .route("/dkg/status", axum::routing::get(handle_dkg_status))
         .route("/health", axum::routing::get(handle_health))
+        // An unauthenticated party can still make this node allocate a body
+        // buffer; axum's 2 MiB default is more than any message here needs.
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&cli.bind).await.unwrap();

@@ -18,6 +18,14 @@
 //! [`crate::signing`]. A coordinator that lies is refused with
 //! `MessageMismatch` or `ChallengeMismatch` rather than obeyed.
 //!
+//! # The coordinator is a roster member
+//!
+//! Every mutating endpoint takes a signed envelope (M-2), so the coordinator
+//! holds a roster identity and signs what it posts. There is no anonymous
+//! coordinator role any more: driving a signing round is an authorized action,
+//! and the authorization is the same ed25519 key the roster already names.
+//! `/sign/status` is read-only and stays open.
+//!
 //! The coordinator must therefore build its context over the *same* epoch and
 //! manifest hash the nodes hold, which it reads from `/health` and
 //! `/sign/status`. If it does not, nothing is signed. That is the intended
@@ -30,11 +38,14 @@ use osst::nested::InnerSigningParamsV2;
 use osst::SigningContext;
 use pasta_curves::pallas::{Point as PallasPoint, Scalar as PallasScalar};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 /// Client for driving nested FROST signing against a narsild node.
 pub struct NarsilClient {
     endpoint: String,
     client: reqwest::Client,
+    /// Signs this coordinator's requests as a roster member.
+    auth: Arc<crate::auth::Authenticator>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +60,8 @@ pub enum ClientError {
     BadResponse(String),
     #[error("osst: {0}")]
     Osst(osst::OsstError),
+    #[error("cannot sign the request: {0}")]
+    Auth(#[from] crate::auth::AuthError),
 }
 
 impl From<osst::OsstError> for ClientError {
@@ -85,11 +98,32 @@ pub struct Round1Output {
 }
 
 impl NarsilClient {
-    pub fn new(endpoint: &str) -> Self {
+    pub fn new(endpoint: &str, auth: Arc<crate::auth::Authenticator>) -> Self {
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(crate::broadcast::PEER_TIMEOUT)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            auth,
         }
+    }
+
+    /// POST a signed envelope to `path`.
+    async fn post_signed<T: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &T,
+    ) -> Result<serde_json::Value, ClientError> {
+        let envelope = self.auth.seal(path, body)?;
+        Ok(self
+            .client
+            .post(format!("{}{}", self.endpoint, path))
+            .json(&envelope)
+            .send()
+            .await?
+            .json()
+            .await?)
     }
 
     /// A session id for a message. Public, and agreed before round 1.
@@ -102,14 +136,19 @@ impl NarsilClient {
     }
 
     /// Round 1: start the inner commitment round and wait for the threshold.
-    pub async fn round1(&self, session_id: [u8; 32]) -> Result<Round1Output, ClientError> {
-        let resp: serde_json::Value = self
-            .client
-            .post(format!("{}/sign/round1", self.endpoint))
-            .json(&serde_json::json!({ "session_id": session_id }))
-            .send()
-            .await?
-            .json()
+    pub async fn round1(
+        &self,
+        session_id: [u8; 32],
+        message: &[u8],
+    ) -> Result<Round1Output, ClientError> {
+        let resp = self
+            .post_signed(
+                "/sign/round1",
+                &serde_json::json!({
+                    "session_id": session_id,
+                    "message_hex": hex::encode(message),
+                }),
+            )
             .await?;
         if let Some(e) = resp.get("error") {
             return Err(ClientError::Narsild(e.to_string()));
@@ -127,14 +166,7 @@ impl NarsilClient {
     ) -> Result<PallasScalar, ClientError> {
         let request = build_request(round1, outer, message, active_indices)?;
 
-        let resp: serde_json::Value = self
-            .client
-            .post(format!("{}/sign/round2", self.endpoint))
-            .json(&request)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let resp = self.post_signed("/sign/round2", &request).await?;
         if let Some(e) = resp.get("error") {
             return Err(ClientError::Narsild(e.to_string()));
         }
@@ -152,7 +184,7 @@ impl NarsilClient {
         outer: &OuterRound,
     ) -> Result<PallasScalar, ClientError> {
         let session_id = Self::session_id_for(message);
-        let round1 = self.round1(session_id).await?;
+        let round1 = self.round1(session_id, message).await?;
         let active: Vec<u32> = round1.commitments.iter().map(|c| c.holder_index).collect();
         self.round2(&round1, outer, message, active).await
     }

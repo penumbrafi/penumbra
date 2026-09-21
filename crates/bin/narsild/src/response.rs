@@ -246,6 +246,7 @@ pub const ALL_RESPONSE_FIELDS: &[&str] = &[
     "inner_n",
     "inner_threshold",
     "needed",
+    "message_hex",
     "nested_commitment",
     "nested_index",
     "nested_position",
@@ -297,6 +298,7 @@ mod tests {
     fn sample_responses() -> Vec<serde_json::Value> {
         let commitment = crate::signing::InnerCommitment {
             session_id: [1u8; 32],
+            message_hex: hex::encode(b"m"),
             holder_index: 1,
             hiding: "aa".into(),
             binding: "bb".into(),

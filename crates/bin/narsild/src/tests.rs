@@ -40,6 +40,8 @@ fn roster() -> Arc<Roster> {
                     index: i,
                     url: format!("http://node{i}:9200"),
                     x25519_pub: x25519_public_from_seed(&seed(i)),
+                    ed25519_pub: crate::identity::NodeIdentity::from_seed_for_test(seed(i))
+                        .ed25519_public(),
                 })
                 .collect(),
         )
@@ -334,11 +336,12 @@ fn inner_round1(session_id: [u8; 32]) -> Vec<InnerRound1> {
         .collect()
 }
 
-fn wire_commitments(round1: &[InnerRound1]) -> Vec<InnerCommitment> {
+fn wire_commitments(round1: &[InnerRound1], message: &[u8]) -> Vec<InnerCommitment> {
     round1
         .iter()
         .map(|r| InnerCommitment {
             session_id: r.commitments.session_id,
+            message_hex: hex::encode(message),
             holder_index: r.commitments.holder_index,
             hiding: point_hex(&r.commitments.hiding),
             binding: point_hex(&r.commitments.binding),
@@ -632,7 +635,7 @@ fn the_coordinator_request_round_trips_through_the_wire_types() {
 
     let out = crate::client::Round1Output {
         session_id,
-        commitments: wire_commitments(&round1),
+        commitments: wire_commitments(&round1, message),
         nested_commitment,
     };
     let outer = crate::client::OuterRound {
