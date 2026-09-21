@@ -64,12 +64,24 @@ fn roster() -> Arc<Roster> {
 
 /// Run the whole ceremony in-process and return each node's result.
 ///
-/// `tamper` is given each round-2 message before delivery, so a test can
-/// misroute or corrupt one.
+/// `tamper` is given each round-2 message before delivery, together with every
+/// node's round-1 broadcast, so a test can misroute one, corrupt one, or seal
+/// a sub-share that is not the evaluation it should be.
 fn run_dkg(
     roster: &Arc<Roster>,
-    mut tamper: impl FnMut(&mut DkgRound2Msg),
+    tamper: impl FnMut(&mut DkgRound2Msg, &[crate::dkg::DkgRound1Broadcast]),
 ) -> Result<Vec<DkgResult>, DkgError> {
+    let mut ceremonies = run_dkg_ceremonies(roster, tamper)?;
+    ceremonies.iter_mut().map(|c| c.finalize()).collect()
+}
+
+/// [`run_dkg`], stopping before finalization so a test can inspect what each
+/// node concluded — its abort reason, its complaint tally, the dealers it was
+/// cheated by.
+fn run_dkg_ceremonies(
+    roster: &Arc<Roster>,
+    mut tamper: impl FnMut(&mut DkgRound2Msg, &[crate::dkg::DkgRound1Broadcast]),
+) -> Result<Vec<DkgCeremony>, DkgError> {
     let mut ceremonies: Vec<DkgCeremony> = (1..=N)
         .map(|i| {
             DkgCeremony::new(
@@ -113,7 +125,7 @@ fn run_dkg(
         outgoing.extend(ceremony.round2_messages()?);
     }
     for mut msg in outgoing {
-        tamper(&mut msg);
+        tamper(&mut msg, &broadcasts);
         let recipient = msg.recipient_index;
         if recipient == 0 || recipient > N {
             continue;
@@ -121,13 +133,28 @@ fn run_dkg(
         ceremonies[recipient as usize - 1].receive_round2(&msg)?;
     }
 
-    ceremonies.iter_mut().map(|c| c.finalize()).collect()
+    // Complaints, if any, reach every other node — the re-broadcast half of
+    // M-6 that a library cannot do for a caller.
+    let complaints: Vec<_> = ceremonies
+        .iter_mut()
+        .flat_map(|c| c.take_complaints())
+        .collect();
+    for complaint in &complaints {
+        for ceremony in ceremonies.iter_mut() {
+            if ceremony.holder_index == complaint.accuser_index {
+                continue;
+            }
+            ceremony.receive_complaint(complaint)?;
+        }
+    }
+
+    Ok(ceremonies)
 }
 
 #[test]
 fn a_three_node_sealed_dkg_agrees_on_one_group_key() {
     let roster = roster();
-    let results = run_dkg(&roster, |_| {}).unwrap();
+    let results = run_dkg(&roster, |_, _| {}).unwrap();
 
     assert_eq!(results.len(), N as usize);
     for r in &results {
@@ -154,7 +181,7 @@ fn a_three_node_sealed_dkg_agrees_on_one_group_key() {
 #[test]
 fn a_misrouted_sealed_package_does_not_open() {
     let roster = roster();
-    let err = run_dkg(&roster, |msg| {
+    let err = run_dkg(&roster, |msg, _| {
         // Redirect node 1's package for node 2 to node 3.
         if msg.dealer_index == 1 && msg.recipient_index == 2 {
             msg.recipient_index = 3;
@@ -171,7 +198,7 @@ fn a_misrouted_sealed_package_does_not_open() {
 #[test]
 fn a_corrupted_sealed_package_names_its_dealer() {
     let roster = roster();
-    let err = run_dkg(&roster, |msg| {
+    let err = run_dkg(&roster, |msg, _| {
         if msg.dealer_index == 2 && msg.recipient_index == 1 {
             let mut bytes = hex::decode(&msg.sealed[0].ciphertext).unwrap();
             let last = bytes.len() - 1;
@@ -184,6 +211,230 @@ fn a_corrupted_sealed_package_names_its_dealer() {
         DkgError::Aborted(crate::dkg::AbortReason::SealedPackage(i)) => assert_eq!(i, 2),
         other => panic!("expected an abort naming dealer 2, got {other}"),
     }
+}
+
+/// Dealer `dealer`'s commitment for coefficient `coeff`, from its round-1
+/// broadcast — the commitment the whole group agreed on.
+fn agreed_commitment(
+    broadcasts: &[crate::dkg::DkgRound1Broadcast],
+    dealer: u32,
+    coeff: usize,
+) -> osst::reshare::DealerCommitment<PallasPoint> {
+    let b = broadcasts
+        .iter()
+        .find(|b| b.dealer_index == dealer)
+        .expect("dealer is on the roster");
+    osst::reshare::DealerCommitment {
+        dealer_index: dealer,
+        coefficients: b.coefficients[coeff]
+            .commitments
+            .iter()
+            .map(|h| point_from_hex(h).unwrap())
+            .collect(),
+    }
+}
+
+/// Seal a scalar that is *not* `f_dealer(recipient)` under the dealer's own
+/// static key, with the dealer's genuine commitment digest inside.
+///
+/// This is the only round-2 misbehaviour that is anyone's fault but the
+/// transport's: the package opens, its indices agree, its D-2 digest is the
+/// agreed one, and only the Feldman check catches it.
+fn cheating_ciphertext(
+    roster: &Arc<Roster>,
+    dealer: u32,
+    recipient: u32,
+    commitment: &osst::reshare::DealerCommitment<PallasPoint>,
+) -> String {
+    let sealed_roster = roster.sealed_roster(EPOCH, &CEREMONY_NONCE).unwrap();
+    let junk = osst::reshare::SubShare::<PallasScalar>::new(
+        dealer,
+        recipient,
+        PallasScalar::from_u32(0xbadbad),
+    )
+    .unwrap();
+    let sealed = osst::sealed::seal_subshare::<PallasPoint>(
+        &x25519_secret_from_seed(&seed(dealer)),
+        &sealed_roster,
+        crate::dkg::ROUND_SUBSHARE,
+        &junk,
+        commitment,
+    )
+    .unwrap();
+    hex::encode(sealed.ciphertext)
+}
+
+/// M-6 residual: a dealer that seals a sub-share failing the Feldman check
+/// against its own agreed commitment is caught by every recipient, each one
+/// raises evidence the others re-check, and the threshold of them disqualifies
+/// it by name.
+///
+/// Through 0.5.0 this was the split-group case: `open_subshare_agreed`
+/// discarded the plaintext, so a cheated node aborted alone while the rest
+/// finalized. osst 0.5.1's `open_subshare_agreed_with_evidence` is what makes
+/// the accusation checkable, and `ComplaintTally` is what stops one node's
+/// word being enough.
+#[test]
+fn a_cheating_dealer_is_disqualified_once_the_threshold_of_members_says_so() {
+    let roster = roster();
+    let ceremonies = run_dkg_ceremonies(&roster, |msg, broadcasts| {
+        // Dealer 2 cheats every recipient but itself, in coefficient 0.
+        if msg.dealer_index == 2 && msg.recipient_index != 2 {
+            let commitment = agreed_commitment(broadcasts, 2, 0);
+            msg.sealed[0].ciphertext =
+                cheating_ciphertext(&roster, 2, msg.recipient_index, &commitment);
+        }
+    })
+    .unwrap();
+
+    // Nodes 1 and 3 were cheated: INNER_T = 2 distinct accusers, so dealer 2
+    // goes, and every node — the cheat's own included — says so by name.
+    for c in &ceremonies {
+        assert_eq!(
+            c.abort_reason(),
+            Some(&crate::dkg::AbortReason::Dealer(2)),
+            "node {} did not name the cheating dealer",
+            c.holder_index
+        );
+    }
+
+    // And nobody finalizes: the ceremony is over, not quietly smaller.
+    for c in ceremonies.iter() {
+        assert!(!c.round2_complete() || c.abort_reason().is_some());
+    }
+}
+
+/// M-6 residual, the other half: one accuser is not evidence.
+///
+/// A `BadSubShare` complaint is checkable but not attributable — a fabricated
+/// scalar fails the Feldman check exactly as a real one does, so the verdict
+/// is `Upheld` for a lie too. The ceremony must therefore *not* abort on one,
+/// and the accuser must be visible as the single member claiming it.
+#[test]
+fn a_lone_false_accuser_does_not_abort_the_ceremony() {
+    use osst::dkg as odkg;
+
+    let roster = roster();
+    let mut ceremonies = run_dkg_ceremonies(&roster, |_, _| {}).unwrap();
+    assert!(ceremonies.iter().all(|c| c.abort_reason().is_none()));
+
+    // Member 1 makes one up against dealer 2, which dealt honestly to
+    // everyone, and signs it with its own roster identity key.
+    let broadcast = ceremonies[1].round1_broadcast();
+    let commitment = agreed_commitment(std::slice::from_ref(&broadcast), 2, 0);
+    let evidence = odkg::BadSubShareEvidence {
+        dealer_index: 2,
+        recipient_index: 1,
+        session_id: ceremonies[0].session_id,
+        round: crate::dkg::ROUND_SUBSHARE,
+        subshare: PallasScalar::from_u32(7).to_bytes(),
+        agreed_digest: odkg::commitment_digest(&commitment),
+        sealed_digest: [0x5au8; 32],
+    };
+    let fabricated = odkg::Complaint::<PallasPoint>::sign(
+        EPOCH,
+        ceremonies[0].session_id,
+        crate::dkg::ROUND_SUBSHARE,
+        1,
+        odkg::ComplaintEvidence::BadSubShare { evidence },
+        &crate::identity::NodeIdentity::from_seed_for_test(seed(1)).ceremony_identity_secret(),
+        &mut rand_core::OsRng,
+    )
+    .unwrap();
+    let wire = crate::dkg::ComplaintMsg::encode(&fabricated).unwrap();
+
+    // It round-trips, and it is authentic: the signature checks and the
+    // Feldman check fails, because a made-up scalar is not a valid sub-share.
+    let json = serde_json::to_string(&wire).unwrap();
+    let back: crate::dkg::ComplaintMsg = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, wire);
+
+    for node in [0usize, 2] {
+        assert!(
+            ceremonies[node].receive_complaint(&back).unwrap(),
+            "first sight: re-broadcast"
+        );
+        assert!(
+            !ceremonies[node].receive_complaint(&back).unwrap(),
+            "seen: do not loop"
+        );
+        assert_eq!(
+            ceremonies[node].abort_reason(),
+            None,
+            "one accuser must not disqualify an honest dealer"
+        );
+    }
+
+    // The node that was supposedly cheated is the only one saying so, and it
+    // is the only one that cannot finalize.
+    assert!(ceremonies[2].excluded_dealers().is_empty());
+    assert!(ceremonies[2].finalize().is_ok(), "an honest node finalizes");
+
+    // A second, independent accuser is what it would take. Member 3 says the
+    // same thing and dealer 2 goes.
+    let evidence3 = odkg::BadSubShareEvidence {
+        dealer_index: 2,
+        recipient_index: 3,
+        session_id: ceremonies[0].session_id,
+        round: crate::dkg::ROUND_SUBSHARE,
+        subshare: PallasScalar::from_u32(9).to_bytes(),
+        agreed_digest: odkg::commitment_digest(&commitment),
+        sealed_digest: [0x5bu8; 32],
+    };
+    let second = odkg::Complaint::<PallasPoint>::sign(
+        EPOCH,
+        ceremonies[0].session_id,
+        crate::dkg::ROUND_SUBSHARE,
+        3,
+        odkg::ComplaintEvidence::BadSubShare { evidence: evidence3 },
+        &crate::identity::NodeIdentity::from_seed_for_test(seed(3)).ceremony_identity_secret(),
+        &mut rand_core::OsRng,
+    )
+    .unwrap();
+    ceremonies[0]
+        .receive_complaint(&crate::dkg::ComplaintMsg::encode(&second).unwrap())
+        .unwrap();
+    assert_eq!(
+        ceremonies[0].abort_reason(),
+        Some(&crate::dkg::AbortReason::Dealer(2)),
+        "INNER_T distinct accusers is the gate, and it was reached"
+    );
+}
+
+/// A complaint whose evidence names a commitment this node has never agreed on
+/// cannot be adjudicated, and is dropped rather than believed.
+#[test]
+fn a_complaint_about_a_commitment_we_never_agreed_on_is_dropped() {
+    use osst::dkg as odkg;
+
+    let roster = roster();
+    let mut ceremonies = run_dkg_ceremonies(&roster, |_, _| {}).unwrap();
+
+    let stranger = agreed_commitment(&[ceremony_for(2, &roster).round1_broadcast()], 2, 0);
+    let evidence = odkg::BadSubShareEvidence {
+        dealer_index: 2,
+        recipient_index: 1,
+        session_id: ceremonies[0].session_id,
+        round: crate::dkg::ROUND_SUBSHARE,
+        subshare: PallasScalar::from_u32(7).to_bytes(),
+        agreed_digest: odkg::commitment_digest(&stranger),
+        sealed_digest: [0u8; 32],
+    };
+    let complaint = odkg::Complaint::<PallasPoint>::sign(
+        EPOCH,
+        ceremonies[0].session_id,
+        crate::dkg::ROUND_SUBSHARE,
+        1,
+        odkg::ComplaintEvidence::BadSubShare { evidence },
+        &crate::identity::NodeIdentity::from_seed_for_test(seed(1)).ceremony_identity_secret(),
+        &mut rand_core::OsRng,
+    )
+    .unwrap();
+    assert!(matches!(
+        ceremonies[2].receive_complaint(&crate::dkg::ComplaintMsg::encode(&complaint).unwrap()),
+        Err(DkgError::ComplaintBeforeAgreement(1))
+    ));
+    assert_eq!(ceremonies[2].abort_reason(), None);
 }
 
 /// M-6: a complaint is a signed, ceremony-bound, publicly checkable value, and
@@ -435,7 +686,7 @@ struct Group {
 /// this, and only because it holds every node's material at once.
 fn build_group() -> Group {
     let roster = roster();
-    let results = run_dkg(&roster, |_| {}).unwrap();
+    let results = run_dkg(&roster, |_, _| {}).unwrap();
     let packages: Vec<KeyPackage> = results.iter().map(|r| r.key_package()).collect();
 
     let indices: Vec<u32> = (1..=N).collect();

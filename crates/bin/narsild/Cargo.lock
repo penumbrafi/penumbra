@@ -1294,8 +1294,8 @@ dependencies = [
 
 [[package]]
 name = "osst"
-version = "0.5.0"
-source = "git+https://github.com/penumbrafi/frostito?rev=f4f1a1a#f4f1a1aecd5193c8bbb4bd36cece7b6b6caa7f80"
+version = "0.5.1"
+source = "git+https://github.com/penumbrafi/frostito?rev=6c797ba#6c797baaf202b03091bd90450bfb4b08a9e2c506"
 dependencies = [
  "blake2b_simd",
  "hkdf",

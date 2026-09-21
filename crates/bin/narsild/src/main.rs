@@ -174,17 +174,22 @@ fn report_dkg(_app: &AppState, e: dkg::DkgError) -> Response {
     err(e)
 }
 
-/// Publish a complaint this node raised, if it raised one.
+/// Publish the complaints this node raised, if any.
 ///
 /// A complaint that stays on the node that raised it is worse than useless:
 /// the others finalize, write key packages, and the group ends up split
-/// between nodes that completed a ceremony and one that did not. The complaint
-/// carries public evidence — a round-1 package whose proof of knowledge does
-/// not verify — so publishing it discloses nothing and every recipient reaches
-/// the verdict itself.
+/// between nodes that completed a ceremony and one that did not.
+///
+/// Both kinds are checkable by every recipient. A round-1 package whose proof
+/// of knowledge does not verify is public data and fully transferable; a
+/// round-2 sub-share that fails the Feldman check against the agreed
+/// commitment is checkable but not attributable, which is why a recipient of
+/// one records it against a threshold rather than acting on it
+/// (`DkgCeremony::receive_complaint`).
 async fn publish_complaint(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) {
-    if let Some(complaint) = guard.as_mut().and_then(|c| c.take_complaint()) {
-        app.peers.broadcast("/dkg/complaint", &complaint);
+    let complaints = guard.as_mut().map(|c| c.take_complaints()).unwrap_or_default();
+    for complaint in &complaints {
+        app.peers.broadcast("/dkg/complaint", complaint);
     }
 }
 
@@ -523,6 +528,18 @@ async fn run_round2(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) {
 
 async fn maybe_finalize(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) -> Option<String> {
     let ceremony = guard.as_mut()?;
+    if !ceremony.excluded_dealers().is_empty() {
+        // This node complained about a dealer and fewer than `t` members said
+        // the same, so the dealer stands and this node has no share from it.
+        // Not an abort — one accuser is not evidence — but not a key package
+        // either; the operator re-runs the ceremony without that member.
+        tracing::error!(
+            "not finalizing: no valid sub-share from dealer(s) {:?}, and the group \
+             did not reach the threshold to disqualify them",
+            ceremony.excluded_dealers()
+        );
+        return None;
+    }
     if !ceremony.round2_complete() {
         return None;
     }
