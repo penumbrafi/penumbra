@@ -177,28 +177,18 @@ fn a_corrupted_sealed_package_names_its_dealer() {
     }
 }
 
-/// A complaint reaches the other members, and stops them too.
+/// M-6: one complaint nobody else can check does not stop the ceremony, and
+/// `inner_t` independent ones do.
 ///
-/// This is the property the broadcast exists for: a ceremony that continues
-/// without the complainant produces a key the complainant does not hold, and
-/// the group is then split between nodes that finished and one that did not.
+/// The old behaviour believed any complaint from anyone, so a single packet
+/// was a denial of service. The evidence osst 0.4.0 lets a complainant publish
+/// for a round-2 failure is not publicly verifiable — `open_subshare` discards
+/// the plaintext — so the sound policy for that class is a threshold of
+/// independent accusers, not trust.
 #[test]
-fn a_complaint_stops_every_member_not_just_the_complainant() {
+fn an_unverifiable_complaint_needs_a_threshold_of_accusers() {
     let roster = roster();
-    let mut ceremonies: Vec<DkgCeremony> = (1..=N)
-        .map(|i| {
-            DkgCeremony::new(
-                i,
-                roster.clone(),
-                x25519_secret_from_seed(&seed(i)),
-                EPOCH,
-                CEREMONY_NONCE,
-                INNER_T,
-                OUTER_T,
-            )
-            .unwrap()
-        })
-        .collect();
+    let mut ceremonies: Vec<DkgCeremony> = (1..=N).map(|i| ceremony_for(i, &roster)).collect();
 
     let broadcasts: Vec<_> = ceremonies.iter().map(|c| c.round1_broadcast()).collect();
     for ceremony in ceremonies.iter_mut() {
@@ -206,44 +196,114 @@ fn a_complaint_stops_every_member_not_just_the_complainant() {
             ceremony.receive_round1(b).unwrap();
         }
     }
-    let echoes: Vec<_> = ceremonies.iter().map(|c| c.echo().unwrap()).collect();
-    for ceremony in ceremonies.iter_mut() {
-        for e in &echoes {
-            ceremony.receive_echo(e).unwrap();
-        }
-    }
 
-    // Node 1 is handed a corrupted package from dealer 2 and complains.
-    let mut msg = ceremonies[1]
-        .round2_messages()
-        .unwrap()
-        .into_iter()
-        .find(|m| m.recipient_index == 1)
-        .unwrap();
-    let mut bytes = hex::decode(&msg.sealed[0].ciphertext).unwrap();
-    let last = bytes.len() - 1;
-    bytes[last] ^= 0xff;
-    msg.sealed[0].ciphertext = hex::encode(bytes);
-
-    let complaint = match ceremonies[0].receive_round2(&msg).unwrap_err() {
-        DkgError::Aborted(c) => c,
-        other => panic!("expected an abort, got {other}"),
+    let complaint_from = |accuser: u32, c: &DkgCeremony| crate::dkg::Complaint {
+        complainant_index: accuser,
+        dealer_index: 2,
+        coeff_index: 0,
+        epoch: EPOCH,
+        session_id: c.session_id,
+        roster_hash: hex::encode(roster.hash()),
+        round: 2,
+        commitment_digest: c.commitment_digest_of(0, 2).unwrap(),
+        reason: crate::agreement::ComplaintReason::SealedOpenFailed,
+        evidence: crate::agreement::ComplaintEvidence::SealedRejected {
+            ciphertext_digest: hex::encode([7u8; 32]),
+        },
     };
-    assert_eq!(complaint.dealer_index, 2);
 
-    // The complaint is broadcast; everyone else stops.
-    for ceremony in ceremonies.iter_mut().skip(1) {
-        ceremony.receive_complaint(&complaint).unwrap();
-    }
-    assert!(ceremonies.iter().all(|c| c.abort_reason().is_some()));
+    // One accuser: recorded, re-broadcast, but not acted on.
+    let first = complaint_from(1, &ceremonies[2]);
+    assert!(ceremonies[2].receive_complaint(&first).unwrap());
+    assert!(ceremonies[2].abort_reason().is_none());
+
+    // The same complaint again is not a second accuser.
+    assert!(!ceremonies[2].receive_complaint(&first).unwrap());
+    assert!(ceremonies[2].abort_reason().is_none());
+
+    // A second, independent accuser reaches the inner threshold.
+    let second = complaint_from(3, &ceremonies[2]);
+    assert!(ceremonies[2].receive_complaint(&second).unwrap());
+    assert!(ceremonies[2].abort_reason().is_some());
 
     // And an aborted ceremony will not finalize into a key package.
-    for ceremony in ceremonies.iter_mut() {
-        assert!(matches!(
-            ceremony.finalize().unwrap_err(),
-            DkgError::AlreadyAborted(_)
-        ));
+    assert!(matches!(
+        ceremonies[2].finalize().unwrap_err(),
+        DkgError::AlreadyAborted(_)
+    ));
+}
+
+/// M-6: a complaint whose own evidence contradicts it is ignored, and its
+/// accuser is flagged rather than obeyed.
+#[test]
+fn a_complaint_that_names_the_wrong_commitment_is_ignored() {
+    let roster = roster();
+    let mut node = ceremony_for(3, &roster);
+    for i in 1..=N {
+        let b = if i == 3 {
+            node.round1_broadcast()
+        } else {
+            ceremony_for(i, &roster).round1_broadcast()
+        };
+        node.receive_round1(&b).unwrap();
     }
+
+    let bogus = crate::dkg::Complaint {
+        complainant_index: 1,
+        dealer_index: 2,
+        coeff_index: 0,
+        epoch: EPOCH,
+        session_id: node.session_id,
+        roster_hash: hex::encode(roster.hash()),
+        round: 2,
+        // A commitment this ceremony does not contain.
+        commitment_digest: hex::encode([0xaa; 32]),
+        reason: crate::agreement::ComplaintReason::InvalidSubShare,
+        evidence: crate::agreement::ComplaintEvidence::SubShare {
+            value_hex: hex::encode([3u8; 32]),
+        },
+    };
+
+    node.receive_complaint(&bogus).unwrap();
+    assert!(node.abort_reason().is_none(), "a false complaint stopped the ceremony");
+    assert!(node.flagged_accusers().contains(&1));
+}
+
+/// M-6: a complaint from another ceremony does not replay into this one.
+#[test]
+fn a_complaint_from_another_ceremony_is_refused() {
+    let roster = roster();
+    let mut node = ceremony_for(1, &roster);
+    let other = DkgCeremony::new(
+        1,
+        roster.clone(),
+        x25519_secret_from_seed(&seed(1)),
+        EPOCH,
+        [0xeeu8; 32],
+        INNER_T,
+        OUTER_T,
+    )
+    .unwrap();
+
+    let replayed = crate::dkg::Complaint {
+        complainant_index: 2,
+        dealer_index: 3,
+        coeff_index: 0,
+        epoch: EPOCH,
+        session_id: other.session_id,
+        roster_hash: hex::encode(roster.hash()),
+        round: 2,
+        commitment_digest: hex::encode([1u8; 32]),
+        reason: crate::agreement::ComplaintReason::SealedOpenFailed,
+        evidence: crate::agreement::ComplaintEvidence::SealedRejected {
+            ciphertext_digest: hex::encode([2u8; 32]),
+        },
+    };
+    assert!(matches!(
+        node.receive_complaint(&replayed).unwrap_err(),
+        DkgError::CeremonyMismatch(2)
+    ));
+    assert!(node.abort_reason().is_none());
 }
 
 /// Nodes that disagree about the roster derive different session ids, so

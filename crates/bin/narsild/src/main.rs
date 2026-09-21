@@ -682,8 +682,12 @@ async fn handle_dkg_echo(
     .into_response()
 }
 
-/// A peer raised a complaint. Abort here too: a ceremony that continues
-/// without one member produces a key that member does not hold.
+/// A peer raised a complaint (M-6).
+///
+/// Adjudicated locally — the ceremony checks the evidence against its own
+/// round-1 record — and re-broadcast the first time it is seen, so a complaint
+/// delivered to one node reaches the whole group instead of stopping that node
+/// while the rest finalize.
 async fn handle_dkg_complaint(
     State(app): State<AppState>,
     Json(envelope): Json<Envelope>,
@@ -699,13 +703,23 @@ async fn handle_dkg_complaint(
     let mut guard = app.dkg_ceremony.lock().await;
     match guard.as_mut() {
         Some(c) => match c.receive_complaint(&complaint) {
-            Ok(()) => Json(DkgProgressResponse {
-                accepted: true,
-                phase: "aborted",
-                round_complete: None,
-                group_key: None,
-            })
-            .into_response(),
+            Ok(fresh) => {
+                let phase = if c.abort_reason().is_some() {
+                    "aborted"
+                } else {
+                    "complaint_recorded"
+                };
+                if fresh {
+                    app.peers.broadcast("/dkg/complaint", &complaint);
+                }
+                Json(DkgProgressResponse {
+                    accepted: true,
+                    phase,
+                    round_complete: None,
+                    group_key: None,
+                })
+                .into_response()
+            }
             Err(e) => err(e),
         },
         None => err("no DKG ceremony active"),

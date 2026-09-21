@@ -145,6 +145,105 @@ pub struct DkgEcho {
     pub digest: [u8; 32],
 }
 
+// ---------------------------------------------------------------------------
+// Complaints (M-6)
+// ---------------------------------------------------------------------------
+
+/// Why a recipient is accusing a dealer. A closed set, not a string: the old
+/// `reason: String` was unbounded attacker-controlled text logged at `error!`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComplaintReason {
+    /// The sealed package did not open for this ceremony.
+    SealedOpenFailed,
+    /// It opened, and the sub-share fails the Feldman check.
+    InvalidSubShare,
+    /// The dealer's proof of knowledge of its constant term does not verify.
+    InvalidProofOfKnowledge,
+    /// The members disagree about what round 1 was.
+    Round1Disagreement,
+}
+
+/// What the accuser publishes so that everyone else can reach the same verdict.
+///
+/// A complaint that nobody can check is a denial-of-service primitive: the
+/// only two policies available are "believe everyone", where one packet halts
+/// the ceremony, and "believe nobody", where a genuinely bad dealer is
+/// undetectable. Justification is what makes the third option — everyone
+/// checks — possible.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ComplaintEvidence {
+    /// The accuser opened the package and publishes the sub-share it received,
+    /// so every node re-runs the Feldman check itself and reaches the same
+    /// verdict. A sub-share whose secrecy the complaint already forfeits is no
+    /// additional loss.
+    ///
+    /// narsild cannot produce this against osst 0.4.0: `open_subshare`
+    /// discards the plaintext on a failed check, and there is no lower-level
+    /// open. The verification path below is written and tested against
+    /// hand-built evidence so that the 0.5.0 swap is a change to the
+    /// *producing* side only.
+    SubShare { value_hex: String },
+    /// The package did not open at all, so there is nothing to publish: the
+    /// ciphertext is sealed to the accuser. Not publicly verifiable, and
+    /// treated as such.
+    SealedRejected {
+        /// SHA-256 of the ciphertext the accuser received, so the accusation
+        /// is at least pinned to one concrete message.
+        ciphertext_digest: String,
+    },
+}
+
+/// What a node concludes about a complaint it did not raise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// The evidence checks out: the dealer is at fault and the ceremony ends.
+    DealerAtFault,
+    /// The evidence contradicts the accusation: the accuser is at fault, the
+    /// complaint is ignored, and the accuser is flagged.
+    AccuserAtFault,
+    /// Nobody but the accuser can check this one.
+    Unverifiable,
+}
+
+/// Adjudicate a complaint against the commitment this node recorded in round 1.
+///
+/// Deterministic, and a function of data every node holds — which is the
+/// point: `osst::dkg::DkgState::disqualify` documents that "every participant
+/// must apply the same complaints, or they derive different keys", and a
+/// verdict reached by trust rather than by checking cannot be the same on
+/// every node.
+pub fn adjudicate<P: osst::curve::OsstPoint>(
+    complainant_index: u32,
+    evidence: &ComplaintEvidence,
+    named_commitment_digest: &str,
+    commitment: &osst::reshare::DealerCommitment<P>,
+) -> Verdict {
+    // The complaint must be about the commitment this node saw in round 1. A
+    // complaint naming anything else is about a message this ceremony does not
+    // contain.
+    if named_commitment_digest != hex::encode(osst::sealed::commitment_digest(commitment)) {
+        return Verdict::AccuserAtFault;
+    }
+
+    match evidence {
+        ComplaintEvidence::SealedRejected { .. } => Verdict::Unverifiable,
+        ComplaintEvidence::SubShare { value_hex } => {
+            let Some(value) = crate::codec::scalar_from_hex_of::<P>(value_hex) else {
+                return Verdict::AccuserAtFault;
+            };
+            if commitment.verify_subshare(complainant_index, &value) {
+                // The share the accuser published is the share it should have
+                // received. The accusation is false.
+                Verdict::AccuserAtFault
+            } else {
+                Verdict::DealerAtFault
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +323,89 @@ mod tests {
         );
         set.insert(3, ours);
         assert_eq!(set.verdict(&ours, 3), EchoVerdict::Agreed);
+    }
+
+    /// M-6: the adjudication a justified complaint gets. Both directions are
+    /// checked here because both matter: a true complaint must stop the
+    /// ceremony on every node, and a false one must not stop it anywhere.
+    ///
+    /// The evidence is hand-built because osst 0.4.0's `open_subshare`
+    /// discards the plaintext on a failed check, so narsild cannot yet produce
+    /// it. This is the path the 0.5.0 swap turns on.
+    #[test]
+    fn a_justified_complaint_is_adjudicated_the_same_way_by_anyone() {
+        use osst::curve::{OsstPoint as _, OsstScalar as _};
+        use pasta_curves::pallas::{Point as P, Scalar as S};
+
+        // f(x) = 5 + 7x, and its Feldman commitment.
+        let a0 = S::from_u32(5);
+        let a1 = S::from_u32(7);
+        let commitment = osst::reshare::DealerCommitment::<P> {
+            dealer_index: 2,
+            coefficients: vec![
+                P::generator().mul_scalar(&a0),
+                P::generator().mul_scalar(&a1),
+            ],
+        };
+        let digest = hex::encode(osst::sealed::commitment_digest(&commitment));
+
+        // The share holder 1 should have received: f(1) = 12.
+        let honest = S::from_u32(12);
+        assert!(commitment.verify_subshare(1, &honest));
+
+        // Accusing a dealer while publishing the share it should have sent is
+        // a false accusation, and says so.
+        assert_eq!(
+            adjudicate::<P>(
+                1,
+                &ComplaintEvidence::SubShare {
+                    value_hex: hex::encode(honest.to_bytes())
+                },
+                &digest,
+                &commitment,
+            ),
+            Verdict::AccuserAtFault
+        );
+
+        // A share that fails the Feldman check convicts the dealer, and every
+        // node reaches that verdict from public data.
+        assert_eq!(
+            adjudicate::<P>(
+                1,
+                &ComplaintEvidence::SubShare {
+                    value_hex: hex::encode(S::from_u32(13).to_bytes())
+                },
+                &digest,
+                &commitment,
+            ),
+            Verdict::DealerAtFault
+        );
+
+        // A complaint about a commitment this ceremony does not contain.
+        assert_eq!(
+            adjudicate::<P>(
+                1,
+                &ComplaintEvidence::SubShare {
+                    value_hex: hex::encode(S::from_u32(13).to_bytes())
+                },
+                &hex::encode([0xaa; 32]),
+                &commitment,
+            ),
+            Verdict::AccuserAtFault
+        );
+
+        // And one nobody can check stays uncheckable.
+        assert_eq!(
+            adjudicate::<P>(
+                1,
+                &ComplaintEvidence::SealedRejected {
+                    ciphertext_digest: hex::encode([1u8; 32])
+                },
+                &digest,
+                &commitment,
+            ),
+            Verdict::Unverifiable
+        );
     }
 
     #[test]
