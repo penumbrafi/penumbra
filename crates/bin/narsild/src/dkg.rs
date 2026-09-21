@@ -234,6 +234,16 @@ pub enum DkgError {
     EpochNotAdvancing { current: u64, asked: u64 },
     #[error("peer {0} is taking part in a different attempt at this epoch")]
     CeremonyMismatch(u32),
+    #[error(
+        "round-1 set disagreement: members {differing:?} saw a different round 1 \
+         from this node. At least one dealer sent different commitments to \
+         different recipients; this ceremony cannot produce one key."
+    )]
+    EchoMismatch { differing: Vec<u32> },
+    #[error("round 1 is not agreed yet: {collected}/{needed} members have echoed")]
+    EchoIncomplete { collected: usize, needed: usize },
+    #[error("dealer {0} has already submitted a round-1 package for coefficient {1}")]
+    DuplicateRound1(u32, u32),
     #[error("epoch mismatch: ours is {ours}, peer {peer_index} says {theirs}")]
     EpochMismatch {
         peer_index: u32,
@@ -299,6 +309,17 @@ pub struct DkgCeremony {
     states: Vec<dkg::DkgState<PallasPoint>>,
     /// Opened sub-shares: `subshares[coeff][dealer] = f_dealer(us)`.
     subshares: Vec<BTreeMap<u32, PallasScalar>>,
+    /// The round-1 broadcasts as accepted, by dealer — what the echo digest is
+    /// computed over, and the evidence a complaint is checked against.
+    round1_msgs: BTreeMap<u32, DkgRound1Broadcast>,
+    /// Every member's echo of the round-1 digest (M-5).
+    echoes: crate::agreement::EchoSet,
+    /// This node's round-1 broadcast, sampled once.
+    ///
+    /// `Dealer::round1_package` draws a fresh proof-of-knowledge nonce on
+    /// every call, so calling it twice would make an honest node look like an
+    /// equivocating dealer to the echo round.
+    our_broadcast: DkgRound1Broadcast,
     /// The complaint that aborted the ceremony, if any.
     aborted: Option<Complaint>,
     pub result: Option<DkgResult>,
@@ -342,7 +363,7 @@ impl DkgCeremony {
             .map(|_| dkg::DkgState::<PallasPoint>::new(epoch, inner_t, n))
             .collect();
 
-        Ok(Self {
+        let mut ceremony = Self {
             holder_index,
             epoch,
             inner_n: n,
@@ -357,9 +378,20 @@ impl DkgCeremony {
             dealers,
             states,
             subshares: (0..outer_t).map(|_| BTreeMap::new()).collect(),
+            round1_msgs: BTreeMap::new(),
+            echoes: crate::agreement::EchoSet::default(),
+            our_broadcast: DkgRound1Broadcast {
+                dealer_index: holder_index,
+                epoch,
+                ceremony_nonce,
+                roster_hash: String::new(),
+                coefficients: Vec::new(),
+            },
             aborted: None,
             result: None,
-        })
+        };
+        ceremony.our_broadcast = ceremony.sample_round1_broadcast();
+        Ok(ceremony)
     }
 
     /// The complaint that aborted this ceremony, if any.
@@ -375,7 +407,16 @@ impl DkgCeremony {
     }
 
     /// Round 1: our Feldman commitments and proofs of knowledge.
+    ///
+    /// Sampled once, in the constructor, and handed out unchanged. The proof
+    /// of knowledge draws a fresh nonce per call, so a node that re-derived
+    /// this would publish two different packages for one slot and be
+    /// indistinguishable from an equivocating dealer.
     pub fn round1_broadcast(&self) -> DkgRound1Broadcast {
+        self.our_broadcast.clone()
+    }
+
+    fn sample_round1_broadcast(&self) -> DkgRound1Broadcast {
         let mut rng = rand_core::OsRng;
         let coefficients = self
             .dealers
@@ -418,6 +459,17 @@ impl DkgCeremony {
     /// coefficient.
     pub fn receive_round1(&mut self, msg: &DkgRound1Broadcast) -> Result<bool, DkgError> {
         self.check_live()?;
+
+        // M-7: one package per dealer, and a second one is an error rather
+        // than a silent drop. osst's `submit_commitment` is first-write-wins
+        // and returns `Ok(false)` for a taken slot, which the old code read as
+        // success — so an attacker who posted under an honest dealer's index
+        // first had that dealer's genuine broadcast dropped, and round 2 then
+        // framed it. Authentication (main.rs) stops the squat; this stops the
+        // silence.
+        if self.round1_msgs.contains_key(&msg.dealer_index) {
+            return Err(DkgError::DuplicateRound1(msg.dealer_index, 0));
+        }
 
         if msg.epoch != self.epoch {
             return Err(DkgError::EpochMismatch {
@@ -508,7 +560,110 @@ impl DkgCeremony {
             }
         }
 
+        self.round1_msgs.insert(msg.dealer_index, msg.clone());
         Ok(self.round1_complete())
+    }
+
+    /// The canonical digest of the round-1 set this node accepted (M-5).
+    ///
+    /// `None` until round 1 is complete: a digest over a partial set says
+    /// nothing, and echoing one would make honest nodes disagree.
+    pub fn round1_digest(&self) -> Option<[u8; 32]> {
+        if !self.round1_complete() {
+            return None;
+        }
+        let entries: Vec<crate::agreement::Round1Entry<'_>> = self
+            .round1_msgs
+            .values()
+            .map(|msg| crate::agreement::Round1Entry {
+                dealer_index: msg.dealer_index,
+                coefficients: msg
+                    .coefficients
+                    .iter()
+                    .map(|c| {
+                        (
+                            c.coeff_index,
+                            c.commitments
+                                .iter()
+                                .map(|h| hex::decode(h).unwrap_or_default())
+                                .collect(),
+                            hex::decode(&c.pok_r).unwrap_or_default(),
+                            hex::decode(&c.pok_z).unwrap_or_default(),
+                        )
+                    })
+                    .collect(),
+                _marker: std::marker::PhantomData,
+            })
+            .collect();
+        Some(crate::agreement::round1_digest(
+            self.epoch,
+            &self.session_id,
+            &entries,
+        ))
+    }
+
+    /// This node's echo of the round-1 digest, to broadcast.
+    pub fn echo(&self) -> Option<crate::agreement::DkgEcho> {
+        Some(crate::agreement::DkgEcho {
+            sender_index: self.holder_index,
+            epoch: self.epoch,
+            session_id: self.session_id,
+            digest: self.round1_digest()?,
+        })
+    }
+
+    /// Accept a member's echo (M-5).
+    ///
+    /// Returns `true` once every roster member has echoed the same digest this
+    /// node computed. A disagreement aborts: at least one dealer sent
+    /// different commitments to different recipients, and there is no key the
+    /// whole group could agree on afterwards.
+    pub fn receive_echo(&mut self, echo: &crate::agreement::DkgEcho) -> Result<bool, DkgError> {
+        self.check_live()?;
+        if echo.epoch != self.epoch {
+            return Err(DkgError::EpochMismatch {
+                peer_index: echo.sender_index,
+                ours: self.epoch,
+                theirs: echo.epoch,
+            });
+        }
+        if echo.session_id != self.session_id {
+            return Err(DkgError::CeremonyMismatch(echo.sender_index));
+        }
+        self.roster.get(echo.sender_index)?;
+
+        let ours = self
+            .round1_digest()
+            .ok_or(DkgError::Round1Incomplete {
+                got: self.round1_msgs.len(),
+                need: self.inner_n as usize,
+            })?;
+        self.echoes.insert(echo.sender_index, echo.digest);
+
+        match self.echoes.verdict(&ours, self.inner_n as usize) {
+            crate::agreement::EchoVerdict::Agreed => Ok(true),
+            crate::agreement::EchoVerdict::Pending { .. } => Ok(false),
+            crate::agreement::EchoVerdict::Disagree { differing } => {
+                self.aborted = Some(Complaint {
+                    complainant_index: self.holder_index,
+                    dealer_index: *differing.first().unwrap_or(&0),
+                    coeff_index: 0,
+                    reason: "round-1 set disagreement".into(),
+                });
+                Err(DkgError::EchoMismatch { differing })
+            }
+        }
+    }
+
+    /// Every member has echoed our digest.
+    pub fn round1_agreed(&self) -> bool {
+        match self.round1_digest() {
+            Some(ours) => {
+                self.echoes.verdict(&ours, self.inner_n as usize)
+                    == crate::agreement::EchoVerdict::Agreed
+            }
+            None => false,
+        }
     }
 
     /// Every roster member has committed for every coefficient.
@@ -530,6 +685,16 @@ impl DkgCeremony {
             return Err(DkgError::Round1Incomplete {
                 got: self.states.iter().map(|s| s.commitment_count()).min().unwrap_or(0),
                 need: self.inner_n as usize,
+            });
+        }
+        // M-5: nothing leaves this node until the group agrees on what round 1
+        // was. A sealed sub-share is only bound to the commitment as delivered
+        // to its recipient; the echo is what binds that commitment to a single
+        // value every recipient saw.
+        if !self.round1_agreed() {
+            return Err(DkgError::EchoIncomplete {
+                collected: self.echoes.len(),
+                needed: self.inner_n as usize,
             });
         }
 

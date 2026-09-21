@@ -20,6 +20,7 @@
 //!   uses `broadcast` is public by construction.
 
 mod accumulator;
+mod agreement;
 mod auth;
 mod broadcast;
 pub mod client;
@@ -366,6 +367,26 @@ async fn next_epoch(app: &AppState) -> u64 {
     app.signing.signer.lock().await.epoch + 1
 }
 
+/// Round 1 is complete here: publish this node's digest of the round-1 set and
+/// apply it to our own ceremony (M-5).
+///
+/// Nothing moves to round 2 until every member has echoed the same digest.
+async fn run_echo(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) -> bool {
+    let echo = match guard.as_ref().and_then(|c| c.echo()) {
+        Some(e) => e,
+        None => return false,
+    };
+    app.peers.broadcast("/dkg/echo", &echo);
+    match guard.as_mut().map(|c| c.receive_echo(&echo)) {
+        Some(Ok(agreed)) => agreed,
+        Some(Err(e)) => {
+            tracing::error!("DKG echo round: {}", e);
+            false
+        }
+        None => false,
+    }
+}
+
 /// Deliver round 2: one sealed message per recipient, to that recipient only,
 /// and apply our own by the same code path.
 async fn run_round2(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) {
@@ -564,14 +585,14 @@ async fn handle_dkg_round1(
         complete
     );
 
-    if complete {
+    if complete && run_echo(&app, &mut guard).await {
         run_round2(&app, &mut guard).await;
         let _ = maybe_finalize(&app, &mut guard).await;
     }
 
     Json(DkgProgressResponse {
         accepted: true,
-        phase: "round1",
+        phase: if complete { "round1_complete" } else { "round1" },
         round_complete: Some(complete),
         group_key: None,
     })
@@ -617,6 +638,45 @@ async fn handle_dkg_round2(
         accepted: true,
         phase: "round2",
         round_complete: Some(complete),
+        group_key: None,
+    })
+    .into_response()
+}
+
+/// A peer's echo of the round-1 digest (M-5).
+///
+/// This is where a dealer that sent different commitments to different
+/// recipients is caught: the per-recipient checks all pass for such a dealer,
+/// and only a cross-node comparison of the whole round-1 set sees it.
+async fn handle_dkg_echo(
+    State(app): State<AppState>,
+    Json(envelope): Json<Envelope>,
+) -> Response {
+    let (sender, echo): (u32, agreement::DkgEcho) = match authed(&app, "/dkg/echo", &envelope) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Err(r) = same_index(sender, echo.sender_index) {
+        return r;
+    }
+
+    let mut guard = app.dkg_ceremony.lock().await;
+    let agreed = match guard.as_mut().map(|c| c.receive_echo(&echo)) {
+        Some(Ok(a)) => a,
+        Some(Err(e)) => return report_dkg(&app, e),
+        None => return err("no DKG ceremony active"),
+    };
+
+    if agreed {
+        tracing::info!("DKG round 1 agreed by every member; entering round 2");
+        run_round2(&app, &mut guard).await;
+        let _ = maybe_finalize(&app, &mut guard).await;
+    }
+
+    Json(DkgProgressResponse {
+        accepted: true,
+        phase: if agreed { "round1_agreed" } else { "echo" },
+        round_complete: Some(agreed),
         group_key: None,
     })
     .into_response()
@@ -681,7 +741,7 @@ async fn handle_dkg_status(State(app): State<AppState>) -> Response {
                 session_id: Some(hex::encode(c.session_id)),
                 holder_index: Some(c.holder_index),
                 phase,
-                round1_digest: None,
+                round1_digest: c.round1_digest().map(hex::encode),
                 aborted_against_dealer: c.abort_reason().map(|x| x.dealer_index),
                 result: c.result.as_ref().map(|r| r.public_view()),
             }
@@ -998,6 +1058,7 @@ async fn main() {
         .route("/sign/share", axum::routing::post(handle_share))
         .route("/dkg/init", axum::routing::post(handle_dkg_init))
         .route("/dkg/round1", axum::routing::post(handle_dkg_round1))
+        .route("/dkg/echo", axum::routing::post(handle_dkg_echo))
         .route("/dkg/round2", axum::routing::post(handle_dkg_round2))
         .route("/dkg/complaint", axum::routing::post(handle_dkg_complaint))
         .route("/dkg/activate", axum::routing::post(handle_dkg_activate))

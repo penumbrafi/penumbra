@@ -87,6 +87,16 @@ fn run_dkg(
     }
     assert!(ceremonies.iter().all(|c| c.round1_complete()));
 
+    // The echo round: every node publishes its digest of the round-1 set, and
+    // nobody enters round 2 until they all match (M-5).
+    let echoes: Vec<_> = ceremonies.iter().map(|c| c.echo().unwrap()).collect();
+    for ceremony in ceremonies.iter_mut() {
+        for e in &echoes {
+            ceremony.receive_echo(e)?;
+        }
+    }
+    assert!(ceremonies.iter().all(|c| c.round1_agreed()));
+
     // Round 2 is point-to-point: each sealed package goes to its recipient,
     // and nowhere else.
     let mut outgoing: Vec<DkgRound2Msg> = Vec::new();
@@ -194,6 +204,12 @@ fn a_complaint_stops_every_member_not_just_the_complainant() {
     for ceremony in ceremonies.iter_mut() {
         for b in &broadcasts {
             ceremony.receive_round1(b).unwrap();
+        }
+    }
+    let echoes: Vec<_> = ceremonies.iter().map(|c| c.echo().unwrap()).collect();
+    for ceremony in ceremonies.iter_mut() {
+        for e in &echoes {
+            ceremony.receive_echo(e).unwrap();
         }
     }
 
@@ -813,5 +829,106 @@ fn a_rerun_at_the_same_epoch_is_a_different_ceremony() {
     assert!(matches!(
         attempt_b.receive_round1(&stale).unwrap_err(),
         DkgError::CeremonyMismatch(2)
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// The echo round (M-5) and slot squatting (M-7)
+// ---------------------------------------------------------------------------
+
+fn ceremony_for(index: u32, roster: &Arc<Roster>) -> DkgCeremony {
+    DkgCeremony::new(
+        index,
+        roster.clone(),
+        x25519_secret_from_seed(&seed(index)),
+        EPOCH,
+        CEREMONY_NONCE,
+        INNER_T,
+        OUTER_T,
+    )
+    .unwrap()
+}
+
+/// M-5: a dealer that sends different commitments to different recipients
+/// passes every per-recipient check — the sealed sub-share is bound to the
+/// commitment *as delivered to that recipient* — and splits the group. The
+/// echo round is what sees it.
+#[test]
+fn an_equivocating_dealer_is_caught_by_the_echo_round() {
+    let roster = roster();
+    // Dealer 3 runs two ceremonies and hands each peer a different round 1.
+    // Each package is internally valid: a real polynomial, a real proof of
+    // knowledge, a real Feldman commitment.
+    let for_alice = ceremony_for(3, &roster).round1_broadcast();
+    let for_bob = ceremony_for(3, &roster).round1_broadcast();
+    assert_ne!(
+        for_alice.coefficients[0].commitments,
+        for_bob.coefficients[0].commitments
+    );
+
+    let mut alice = ceremony_for(1, &roster);
+    let mut bob = ceremony_for(2, &roster);
+    let a1 = alice.round1_broadcast();
+    let b2 = bob.round1_broadcast();
+    for (c, from3) in [(&mut alice, &for_alice), (&mut bob, &for_bob)] {
+        c.receive_round1(&a1).unwrap();
+        c.receive_round1(&b2).unwrap();
+        c.receive_round1(from3).unwrap();
+    }
+    assert!(alice.round1_complete() && bob.round1_complete());
+
+    // They disagree about what round 1 was, and the echo says so by name.
+    assert_ne!(alice.round1_digest(), bob.round1_digest());
+    let bobs_echo = bob.echo().unwrap();
+    let err = alice.receive_echo(&bobs_echo).unwrap_err();
+    match err {
+        DkgError::EchoMismatch { differing } => assert_eq!(differing, vec![2]),
+        other => panic!("expected an echo mismatch, got {other}"),
+    }
+
+    // And nothing sealed leaves the node afterwards.
+    assert!(alice.round2_messages().is_err());
+}
+
+/// M-5: round 2 does not start on a node that has not seen every echo, even
+/// when its own round 1 is complete.
+#[test]
+fn round_two_does_not_start_before_the_group_agrees() {
+    let roster = roster();
+    let mut node = ceremony_for(1, &roster);
+    for i in 1..=N {
+        let b = ceremony_for(i, &roster).round1_broadcast();
+        if i == 1 {
+            node.receive_round1(&node.round1_broadcast()).unwrap();
+        } else {
+            node.receive_round1(&b).unwrap();
+        }
+    }
+    assert!(node.round1_complete());
+    assert!(matches!(
+        node.round2_messages().unwrap_err(),
+        DkgError::EchoIncomplete { .. }
+    ));
+}
+
+/// M-7: a second round-1 package for a slot is an error, not a silent drop.
+///
+/// osst's `submit_commitment` is first-write-wins and returns `Ok(false)` for
+/// a taken slot, which the old code read as success. Combined with the
+/// unauthenticated endpoint, an attacker posting under an honest dealer's
+/// index *first* had that dealer's genuine broadcast dropped, and round 2 then
+/// produced a sealed package that failed the commitment digest check — framing
+/// the honest dealer. Authentication stops the squat; this stops the silence.
+#[test]
+fn a_second_round_one_package_for_a_slot_is_refused() {
+    let roster = roster();
+    let mut node = ceremony_for(1, &roster);
+    let squatter = ceremony_for(3, &roster).round1_broadcast();
+    let genuine = ceremony_for(3, &roster).round1_broadcast();
+
+    node.receive_round1(&squatter).unwrap();
+    assert!(matches!(
+        node.receive_round1(&genuine).unwrap_err(),
+        DkgError::DuplicateRound1(3, _)
     ));
 }
