@@ -1,0 +1,31 @@
+[workspace]
+
+[package]
+name = "narsild"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "narsild"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "2.2", features = ["std"] }
+hkdf = "0.12"
+hex = "0.4"
+osst = { git = "https://github.com/penumbrafi/frostito", rev = "6c797ba", default-features = false, features = ["std", "pallas", "sealed"] }
+# must be the same pasta instance osst's pallas backend uses
+pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+zeroize = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
