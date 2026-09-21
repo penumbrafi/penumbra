@@ -692,7 +692,7 @@ fn local_signer(
         package.holder_index,
         NESTED_POSITION,
         package.epoch,
-        package.manifest_hash(),
+        package.manifest_hash().unwrap(),
         package.share_at(NESTED_POSITION),
         package.public_shares_at(NESTED_POSITION).unwrap(),
         package.group_pubkey(),

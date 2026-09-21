@@ -414,9 +414,20 @@ async fn maybe_finalize(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) ->
     };
 
     let package = result.key_package();
+    // M-10: a save failure is fatal. Installing the share anyway leaves the
+    // node running at epoch e+1 in memory over an on-disk epoch e, so it
+    // signs under a generation it will silently revert out of on the next
+    // restart — and the shares it would have needed are gone.
     match package.save(&app.data_dir) {
         Ok(path) => tracing::info!("DKG complete; key package written to {}", path.display()),
-        Err(e) => tracing::error!("could not persist key package: {}", e),
+        Err(e) => {
+            tracing::error!(
+                "could not persist the key package ({}); this node cannot continue \
+                 without silently running an epoch it has no record of",
+                e
+            );
+            std::process::exit(1);
+        }
     }
     install_share(app, &package).await;
     Some(result.coeff_commitments.first().cloned().unwrap_or_default())
@@ -424,13 +435,20 @@ async fn maybe_finalize(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) ->
 
 /// Load a key package into the live signer.
 async fn install_share(app: &AppState, package: &KeyPackage) {
+    let manifest_hash = match package.manifest_hash() {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("refusing to install a key package: {}", e);
+            return;
+        }
+    };
     let share = package.share_at(app.nested_position);
     let public_shares = package.public_shares_at(app.nested_position);
     match (share, public_shares) {
         (Some(share), Some(public_shares)) => {
             let mut signer = app.signing.signer.lock().await;
             signer.epoch = package.epoch;
-            signer.manifest_hash = package.manifest_hash();
+            signer.manifest_hash = manifest_hash;
             signer.install(share, public_shares, package.group_pubkey());
             tracing::info!(
                 "share installed: holder={} nested_position={} epoch={}",
@@ -890,9 +908,16 @@ async fn main() {
                 );
                 std::process::exit(1);
             }
+            let manifest_hash = match p.manifest_hash() {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
             (
                 p.epoch,
-                p.manifest_hash(),
+                manifest_hash,
                 p.share_at(cli.nested_position),
                 p.public_shares_at(cli.nested_position).unwrap_or_default(),
                 p.group_pubkey(),
