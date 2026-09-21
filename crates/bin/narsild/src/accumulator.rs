@@ -11,49 +11,53 @@
 //!
 //! this module captures that pattern as a composable service.
 
-use std::collections::HashMap;
-use std::hash::Hash;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, watch};
 
 /// a contribution to a threshold accumulation session
 pub trait Contribution: Clone + Send + Sync + 'static {
     /// unique identifier for the contributor (e.g. holder_index)
-    type Id: Eq + Hash + Clone + Send + Sync;
+    type Id: Ord + Clone + Send + Sync;
     fn contributor_id(&self) -> Self::Id;
 }
 
 /// result of accumulation reaching threshold
 pub trait Aggregate: Clone + Send + Sync + 'static {}
 
+/// The collected contributions are themselves a perfectly good aggregate, and
+/// for both FROST rounds they are the right one: round 1's product is the
+/// commitment set, and round 2's shares must be verified against that set
+/// before they are summed, which needs more context than an aggregation
+/// closure has.
+impl<C: Contribution> Aggregate for Vec<C> {}
+
+/// How a session turns its collected contributions into a result.
+type AggregateFn<C, A> = Box<dyn Fn(&[C]) -> A + Send + Sync>;
+
 /// session state for one accumulation
 pub struct Session<C: Contribution, A: Aggregate> {
-    contributions: HashMap<C::Id, C>,
+    contributions: BTreeMap<C::Id, C>,
     threshold: usize,
-    aggregate_fn: Box<dyn Fn(&[C]) -> A + Send + Sync>,
+    aggregate_fn: AggregateFn<C, A>,
     result: Option<A>,
     notify: watch::Sender<usize>,
-}
-
-/// handle for observing session progress
-pub struct SessionHandle {
-    pub watch: watch::Receiver<usize>,
 }
 
 /// the accumulator: manages sessions, deduplicates, checks threshold
 pub struct ThresholdAccumulator<K, C, A>
 where
-    K: Eq + Hash + Clone + Send + Sync + 'static,
+    K: Ord + Clone + Send + Sync + 'static,
     C: Contribution,
     A: Aggregate,
 {
-    sessions: Arc<Mutex<HashMap<K, Session<C, A>>>>,
+    sessions: Arc<Mutex<BTreeMap<K, Session<C, A>>>>,
     threshold: usize,
 }
 
 impl<K, C, A> Clone for ThresholdAccumulator<K, C, A>
 where
-    K: Eq + Hash + Clone + Send + Sync + 'static,
+    K: Ord + Clone + Send + Sync + 'static,
     C: Contribution,
     A: Aggregate,
 {
@@ -77,37 +81,36 @@ pub enum AccumulateResult<A: Aggregate> {
 
 impl<K, C, A> ThresholdAccumulator<K, C, A>
 where
-    K: Eq + Hash + Clone + Send + Sync + 'static,
+    K: Ord + Clone + Send + Sync + 'static,
     C: Contribution,
     A: Aggregate,
 {
     pub fn new(threshold: usize) -> Self {
         Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(BTreeMap::new())),
             threshold,
         }
     }
 
-    /// ensure a session exists, returns (created, handle)
+    /// Ensure a session exists, with the aggregation to run once the
+    /// threshold is met. Idempotent: a session that already exists keeps the
+    /// aggregation it was created with.
     pub async fn ensure_session(
         &self,
         key: K,
         aggregate_fn: impl Fn(&[C]) -> A + Send + Sync + 'static,
-    ) -> SessionHandle {
+    ) {
         let mut sessions = self.sessions.lock().await;
-        let session = sessions.entry(key).or_insert_with(|| {
+        sessions.entry(key).or_insert_with(|| {
             let (tx, _rx) = watch::channel(0usize);
             Session {
-                contributions: HashMap::new(),
+                contributions: BTreeMap::new(),
                 threshold: self.threshold,
                 aggregate_fn: Box::new(aggregate_fn),
                 result: None,
                 notify: tx,
             }
         });
-        SessionHandle {
-            watch: session.notify.subscribe(),
-        }
     }
 
     /// add a contribution. deduplicates, checks threshold, aggregates.

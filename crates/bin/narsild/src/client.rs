@@ -1,23 +1,37 @@
-//! narsil client — orchestrates the 2-round nested FROST signing flow
+//! narsil client — the coordinator role of the two-round nested FROST v2 flow.
 //!
-//! usage:
-//! ```ignore
-//! let client = NarsilClient::new("http://localhost:9200");
-//! let (commitments, session_id) = client.round1(message).await?;
+//! # What the coordinator is, and is not
 //!
-//! // compute R_nested from commitments, build outer FROST package,
-//! // derive outer_challenge and outer_lambda...
+//! Under v1 the coordinator computed the outer challenge and Lagrange
+//! coefficient and posted them as two scalars; each node applied them. That is
+//! finding N-1: the nodes had no input from which to tell what they were
+//! authorizing, so a coordinator could derive the outer context honestly over
+//! a message of its own choosing and assemble a signature the inner group
+//! never saw.
 //!
-//! let z_nested = client.round2(session_id, outer_challenge, outer_lambda, active).await?;
-//! // use z_nested as the nested position's FROST signature share
-//! ```
+//! Under v2 the coordinator's job is only to *publish the outer round*. It
+//! sends the full [`SigningRequest`]: the message, the bytes the outer package
+//! was built over, every outer signer's commitments, the outer group key, the
+//! nested index and the session id. Each node rebuilds the package, recomputes
+//! the binding factor, challenge and Lagrange coefficient, and checks the
+//! scalars the coordinator sent against its own — see
+//! [`crate::signing`]. A coordinator that lies is refused with
+//! `MessageMismatch` or `ChallengeMismatch` rather than obeyed.
+//!
+//! The coordinator must therefore build its context over the *same* epoch and
+//! manifest hash the nodes hold, which it reads from `/health` and
+//! `/sign/status`. If it does not, nothing is signed. That is the intended
+//! failure mode of a reshare: the old quorum simply cannot produce a share.
 
-use pasta_curves::pallas::{Point, Scalar};
-use pasta_curves::group::{ff::{Field, PrimeField, FromUniformBytes}, Group, GroupEncoding};
-use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest, Sha512};
+use crate::codec::{point_hex, scalar_from_hex, scalar_hex};
+use crate::signing::{InnerCommitment, OuterCommitment, SigningRequest};
+use osst::frost::{SigningCommitments, SigningPackage};
+use osst::nested::InnerSigningParamsV2;
+use osst::SigningContext;
+use pasta_curves::pallas::{Point as PallasPoint, Scalar as PallasScalar};
+use sha2::{Digest, Sha256};
 
-/// client for driving nested FROST signing against narsild
+/// Client for driving nested FROST signing against a narsild node.
 pub struct NarsilClient {
     endpoint: String,
     client: reqwest::Client,
@@ -33,14 +47,41 @@ pub enum ClientError {
     Timeout,
     #[error("bad response: {0}")]
     BadResponse(String),
+    #[error("osst: {0}")]
+    Osst(osst::OsstError),
 }
 
-/// commitment from one inner holder
-#[derive(Clone, Debug, Deserialize)]
-pub struct CommitmentEntry {
-    pub holder_index: u32,
-    pub hiding: String,
-    pub binding: String,
+impl From<osst::OsstError> for ClientError {
+    fn from(e: osst::OsstError) -> Self {
+        ClientError::Osst(e)
+    }
+}
+
+/// The outer round the nested position is taking part in.
+///
+/// The coordinator owns this; the inner group only ever sees it as public data
+/// it re-derives from.
+pub struct OuterRound {
+    /// The outer group public key.
+    pub group_pubkey: PallasPoint,
+    /// The nested position's index in the outer signing set.
+    pub nested_index: u32,
+    /// Every OTHER outer signer's commitments. The nested position's own pair
+    /// is computed from the inner round-1 set.
+    pub other_commitments: Vec<SigningCommitments<PallasPoint>>,
+    /// The epoch the group is in — must match the nodes' key packages.
+    pub epoch: u64,
+    /// The roster fingerprint — must match the nodes' key packages.
+    pub manifest_hash: [u8; 32],
+}
+
+/// What round 1 produced.
+pub struct Round1Output {
+    pub session_id: [u8; 32],
+    pub commitments: Vec<InnerCommitment>,
+    /// `(D_nested, E_nested)` — the nested position's entry in the outer
+    /// package.
+    pub nested_commitment: (PallasPoint, PallasPoint),
 }
 
 impl NarsilClient {
@@ -51,188 +92,172 @@ impl NarsilClient {
         }
     }
 
-    /// round 1: initiate signing, wait for threshold commitments.
-    /// returns (commitment list, session_id, R_nested point).
-    pub async fn round1(
-        &self,
-        message: &[u8],
-    ) -> Result<(Vec<CommitmentEntry>, [u8; 32], Point), ClientError> {
-        let session_id = {
-            let mut h = Sha256::new();
-            h.update(b"narsil.session.v1");
-            h.update(message);
-            let r: [u8; 32] = h.finalize().into();
-            r
-        };
-
-        // start round 1
-        let resp: serde_json::Value = self.client
-            .post(format!("{}/sign/round1", self.endpoint))
-            .json(&serde_json::json!({
-                "session_id": session_id,
-                "message_hex": hex::encode(message),
-            }))
-            .send().await?
-            .json().await?;
-
-        if let Some(err) = resp.get("error") {
-            return Err(ClientError::Narsild(err.to_string()));
-        }
-
-        // poll until threshold met
-        let commitments = self.poll_round1(session_id).await?;
-
-        // compute R_nested = Σ (D_k + ρ_k * E_k)
-        let r_nested = compute_r_nested(&commitments, message);
-
-        Ok((commitments, session_id, r_nested))
+    /// A session id for a message. Public, and agreed before round 1.
+    pub fn session_id_for(message: &[u8]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(b"narsil.session.v1");
+        h.update((message.len() as u64).to_le_bytes());
+        h.update(message);
+        h.finalize().into()
     }
 
-    /// round 2: send outer params, wait for z_nested.
+    /// Round 1: start the inner commitment round and wait for the threshold.
+    pub async fn round1(&self, session_id: [u8; 32]) -> Result<Round1Output, ClientError> {
+        let resp: serde_json::Value = self
+            .client
+            .post(format!("{}/sign/round1", self.endpoint))
+            .json(&serde_json::json!({ "session_id": session_id }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(e) = resp.get("error") {
+            return Err(ClientError::Narsild(e.to_string()));
+        }
+        self.poll_round1(session_id).await
+    }
+
+    /// Round 2: publish the outer round and wait for `z_nested`.
     pub async fn round2(
         &self,
-        session_id: [u8; 32],
-        outer_challenge: Scalar,
-        outer_lambda: Scalar,
+        round1: &Round1Output,
+        outer: &OuterRound,
+        message: &[u8],
         active_indices: Vec<u32>,
-    ) -> Result<Scalar, ClientError> {
-        let resp: serde_json::Value = self.client
+    ) -> Result<PallasScalar, ClientError> {
+        let request = build_request(round1, outer, message, active_indices)?;
+
+        let resp: serde_json::Value = self
+            .client
             .post(format!("{}/sign/round2", self.endpoint))
-            .json(&serde_json::json!({
-                "session_id": session_id,
-                "outer_challenge_hex": hex::encode(outer_challenge.to_repr().as_ref()),
-                "outer_lambda_hex": hex::encode(outer_lambda.to_repr().as_ref()),
-                "active_indices": active_indices,
-            }))
-            .send().await?
-            .json().await?;
-
-        if let Some(err) = resp.get("error") {
-            return Err(ClientError::Narsild(err.to_string()));
+            .json(&request)
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(e) = resp.get("error") {
+            return Err(ClientError::Narsild(e.to_string()));
         }
-
-        // if z_nested already in response (threshold met immediately)
-        if let Some(z_hex) = resp.get("z_nested").and_then(|v| v.as_str()) {
-            return scalar_from_hex(z_hex)
+        if let Some(z) = resp.get("z_nested").and_then(|v| v.as_str()) {
+            return scalar_from_hex(z)
                 .ok_or_else(|| ClientError::BadResponse("bad z_nested scalar".into()));
         }
-
-        // poll for completion
-        self.poll_round2(session_id).await
+        self.poll_round2(round1.session_id).await
     }
 
-    /// full signing flow: round1 + compute outer params + round2.
-    /// `outer_signer` is a closure that takes (R_nested, commitment_list)
-    /// and returns (outer_challenge, outer_lambda, active_indices, buyer_sig_share).
-    pub async fn sign<F>(
+    /// The whole flow.
+    pub async fn sign(
         &self,
         message: &[u8],
-        outer_signer: F,
-    ) -> Result<Scalar, ClientError>
-    where
-        F: FnOnce(Point, &[CommitmentEntry]) -> (Scalar, Scalar, Vec<u32>),
-    {
-        let (commitments, session_id, r_nested) = self.round1(message).await?;
-        let (outer_challenge, outer_lambda, active_indices) = outer_signer(r_nested, &commitments);
-        self.round2(session_id, outer_challenge, outer_lambda, active_indices).await
+        outer: &OuterRound,
+    ) -> Result<PallasScalar, ClientError> {
+        let session_id = Self::session_id_for(message);
+        let round1 = self.round1(session_id).await?;
+        let active: Vec<u32> = round1.commitments.iter().map(|c| c.holder_index).collect();
+        self.round2(&round1, outer, message, active).await
     }
 
-    // --- internal ---
-
-    async fn poll_round1(&self, session_id: [u8; 32]) -> Result<Vec<CommitmentEntry>, ClientError> {
+    async fn poll_round1(&self, session_id: [u8; 32]) -> Result<Round1Output, ClientError> {
         for _ in 0..30 {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let resp: serde_json::Value = self.client
-                .post(format!("{}/sign/status", self.endpoint))
-                .json(&serde_json::json!({"session_id": session_id}))
-                .send().await?
-                .json().await?;
-
-            let ready = resp.pointer("/round1/ready")
+            let resp = self.status(session_id).await?;
+            if resp
+                .pointer("/round1/ready")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            if ready {
-                let commitments: Vec<CommitmentEntry> = resp.get("commitments")
+                .unwrap_or(false)
+            {
+                let commitments: Vec<InnerCommitment> = resp
+                    .get("commitments")
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
                     .unwrap_or_default();
-                return Ok(commitments);
+                let nested_commitment =
+                    crate::signing::nested_commitment_pair(&session_id, &commitments)
+                        .map_err(|e| ClientError::BadResponse(e.to_string()))?;
+                return Ok(Round1Output {
+                    session_id,
+                    commitments,
+                    nested_commitment,
+                });
             }
         }
         Err(ClientError::Timeout)
     }
 
-    async fn poll_round2(&self, session_id: [u8; 32]) -> Result<Scalar, ClientError> {
+    async fn poll_round2(&self, session_id: [u8; 32]) -> Result<PallasScalar, ClientError> {
         for _ in 0..30 {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let resp: serde_json::Value = self.client
-                .post(format!("{}/sign/status", self.endpoint))
-                .json(&serde_json::json!({"session_id": session_id}))
-                .send().await?
-                .json().await?;
-
-            let complete = resp.pointer("/round2/complete")
+            let resp = self.status(session_id).await?;
+            if resp
+                .pointer("/round2/complete")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            if complete {
-                let z_hex = resp.pointer("/round2/z_nested")
+                .unwrap_or(false)
+            {
+                let z = resp
+                    .pointer("/round2/z_nested")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ClientError::BadResponse("missing z_nested".into()))?;
-                return scalar_from_hex(z_hex)
+                return scalar_from_hex(z)
                     .ok_or_else(|| ClientError::BadResponse("bad z_nested".into()));
             }
         }
         Err(ClientError::Timeout)
     }
-}
 
-/// compute R_nested = Σ (D_k + ρ_inner_k * E_k) from commitment list
-fn compute_r_nested(commitments: &[CommitmentEntry], message: &[u8]) -> Point {
-    let mut r_agg = Point::identity();
-
-    for c in commitments {
-        let hiding_bytes = hex::decode(&c.hiding).unwrap_or_default();
-        let binding_bytes = hex::decode(&c.binding).unwrap_or_default();
-
-        let d_k = point_from_bytes(&hiding_bytes);
-        let e_k = point_from_bytes(&binding_bytes);
-
-        // inner binding factor
-        let rho = {
-            let mut h = Sha512::new();
-            h.update(b"frostito-inner-bind");
-            h.update(c.holder_index.to_le_bytes());
-            h.update((message.len() as u64).to_le_bytes());
-            h.update(message);
-            for cc in commitments {
-                h.update(cc.holder_index.to_le_bytes());
-                h.update(&hex::decode(&cc.hiding).unwrap_or_default());
-                h.update(&hex::decode(&cc.binding).unwrap_or_default());
-            }
-            let hash: [u8; 64] = h.finalize().into();
-            Scalar::from_uniform_bytes(&hash)
-        };
-
-        r_agg = r_agg + d_k + e_k * rho;
+    async fn status(&self, session_id: [u8; 32]) -> Result<serde_json::Value, ClientError> {
+        Ok(self
+            .client
+            .post(format!("{}/sign/status", self.endpoint))
+            .json(&serde_json::json!({ "session_id": session_id }))
+            .send()
+            .await?
+            .json()
+            .await?)
     }
-
-    r_agg
 }
 
-fn point_from_bytes(bytes: &[u8]) -> Point {
-    if bytes.len() != 32 { return Point::identity(); }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(bytes);
-    let ct = Point::from_bytes(&arr.into());
-    if bool::from(ct.is_some()) { ct.unwrap() } else { Point::identity() }
-}
+/// Assemble the round-2 request: the full outer round, plus the coordinator's
+/// own derivation of the three scalars for the nodes to check against.
+pub fn build_request(
+    round1: &Round1Output,
+    outer: &OuterRound,
+    message: &[u8],
+    active_indices: Vec<u32>,
+) -> Result<SigningRequest, ClientError> {
+    let ctx = SigningContext::new(outer.epoch, outer.manifest_hash, message);
+    let signed_bytes = ctx.encode();
 
-fn scalar_from_hex(hex_str: &str) -> Option<Scalar> {
-    let bytes = hex::decode(hex_str).ok()?;
-    if bytes.len() != 32 { return None; }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    let ct = Scalar::from_repr(arr.into());
-    if bool::from(ct.is_some()) { Some(ct.unwrap()) } else { None }
+    let mut commitments = vec![SigningCommitments {
+        index: outer.nested_index,
+        hiding: round1.nested_commitment.0,
+        binding: round1.nested_commitment.1,
+    }];
+    commitments.extend(outer.other_commitments.iter().cloned());
+
+    let package = SigningPackage::<PallasPoint>::new(signed_bytes.clone(), commitments.clone())?;
+    let params = InnerSigningParamsV2::<PallasScalar>::from_outer::<PallasPoint>(
+        &package,
+        &outer.group_pubkey,
+        outer.nested_index,
+    )?;
+
+    Ok(SigningRequest {
+        session_id: round1.session_id,
+        message_hex: hex::encode(message),
+        signed_bytes_hex: hex::encode(&signed_bytes),
+        nested_index: outer.nested_index,
+        group_pubkey: point_hex(&outer.group_pubkey),
+        outer_commitments: commitments
+            .iter()
+            .map(|c| OuterCommitment {
+                index: c.index,
+                hiding: point_hex(&c.hiding),
+                binding: point_hex(&c.binding),
+            })
+            .collect(),
+        inner_commitments: round1.commitments.clone(),
+        active_indices,
+        outer_binding: scalar_hex(params.outer_binding()),
+        outer_challenge: scalar_hex(params.outer_challenge()),
+        outer_lambda: scalar_hex(params.outer_lambda()),
+    })
 }

@@ -1,166 +1,414 @@
-//! nested FROST signing service
+//! Nested FROST v2 signing.
 //!
-//! composes ThresholdAccumulator + PeerBroadcast for the two-round
-//! signing protocol. each round is: contribute locally → broadcast → accumulate.
+//! # What changed, and why the old code could not stay
+//!
+//! The previous implementation hand-rolled the inner round: an inner binding
+//! factor `H("frostito-inner-bind" ‖ k ‖ m ‖ B)`, an inner Lagrange
+//! coefficient, and `z_k = d_k + ρ_k·e_k + (λ·c·μ_k)·σ_k` with `λ` and `c`
+//! taken verbatim from whatever the coordinator posted. That is nested FROST
+//! **v1**, which osst 0.4.0 removed from the default build as finding R-1:
+//! pre-binding the inner nonces hands the outer protocol a single point with
+//! an identity binding commitment, which severs the outer binding coupling and
+//! admits a ROS-style forgery. It also meant an inner holder signed a message
+//! it had only been told about — finding N-1 — so a coordinator could derive
+//! the outer context honestly over a payload of its own choosing, collect
+//! inner shares and assemble a valid signature the inner group never saw.
+//!
+//! v2 inverts the direction of trust. The coordinator supplies the **whole**
+//! outer [`SigningRequest`] — every outer commitment, the group key, the
+//! nested position, the session id — and each node recomputes the binding
+//! factor, the challenge and the Lagrange coefficient itself.
+//! [`osst::nested::inner_sign_v2`] refuses to produce a share unless
+//!
+//! 1. the package's message is byte-for-byte the bytes this node approved
+//!    ([`osst::OsstError::MessageMismatch`]);
+//! 2. the round-1 commitment set contains this node's own commitment for this
+//!    session id, matching the nonces being consumed;
+//! 3. the package's entry for the nested position is exactly `(Σ D_k, Σ E_k)`
+//!    over that set.
+//!
+//! The scalars the coordinator sends alongside are not used: they are checked
+//! against the locally derived ones with
+//! [`osst::nested::InnerSigningParamsV2::from_coordinator_checked`], which
+//! returns [`osst::OsstError::ChallengeMismatch`] on any disagreement.
+//!
+//! # Epoch binding
+//!
+//! The bytes signed are not the application message but
+//! `SigningContext { epoch, manifest_hash, message }.encode()`, and the epoch
+//! and manifest hash come from **this node's own key package**, never from the
+//! request. The epoch is the DKG generation counter; the manifest hash is the
+//! roster fingerprint. A node whose shares were generated in epoch `e` builds
+//! context bytes for epoch `e`; a coordinator running the outer round for
+//! epoch `e+1` built its package over different bytes; the node therefore
+//! refuses with `MessageMismatch` rather than contributing a share. That is
+//! what stops a pre-rotation quorum signing after a reshare, which a
+//! key-preserving reshare cannot otherwise prevent — the group key is
+//! deliberately unchanged.
+//!
+//! This binding only works where the verifier is osst-aware. It does not apply
+//! to a protocol-defined signature such as an Orchard `SpendAuthSig` over a
+//! consensus-fixed sighash, where there is nowhere to put the epoch; retiring
+//! shares there needs an on-chain rotation to a new group key. See
+//! `osst::context`.
 
-use crate::accumulator::{AccumulateResult, Contribution, Aggregate, ThresholdAccumulator};
+use crate::accumulator::{AccumulateResult, Contribution, ThresholdAccumulator};
 use crate::broadcast::PeerSet;
-use pasta_curves::pallas::{Point, Scalar};
-use pasta_curves::group::{ff::Field, ff::PrimeField, ff::FromUniformBytes, Group, GroupEncoding};
+use crate::codec::{point_from_hex, point_hex, scalar_from_hex, scalar_hex};
+use osst::frost::{SigningCommitments, SigningPackage};
+use osst::nested::{
+    self, InnerCommitments, InnerNonces, InnerSigningParamsV2, NestedSigningRequest,
+};
+use osst::{OsstError, SecretShare, SigningContext};
+use pasta_curves::pallas::{Point as PallasPoint, Scalar as PallasScalar};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
-// Round 1: inner nonce commitments
+// Wire types
 // ---------------------------------------------------------------------------
 
+/// One inner holder's round-1 nonce commitments. Public; broadcast.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InnerCommitment {
     pub session_id: [u8; 32],
     pub holder_index: u32,
-    pub hiding: [u8; 32],
-    pub binding: [u8; 32],
-    /// message bytes so receiving peers can store them
-    #[serde(default)]
-    pub message_hex: Option<String>,
+    /// `D_k`, canonical compressed, hex.
+    pub hiding: String,
+    /// `E_k`, canonical compressed, hex.
+    pub binding: String,
 }
 
 impl Contribution for InnerCommitment {
     type Id = u32;
-    fn contributor_id(&self) -> u32 { self.holder_index }
+    fn contributor_id(&self) -> u32 {
+        self.holder_index
+    }
 }
 
-/// round 1 aggregate: the collected commitment list (not a single value —
-/// the client needs the full list to compute R_nested)
-#[derive(Clone, Debug)]
-pub struct CommitmentList(pub Vec<InnerCommitment>);
-impl Aggregate for CommitmentList {}
+impl InnerCommitment {
+    fn decode(&self) -> Option<InnerCommitments<PallasPoint>> {
+        Some(InnerCommitments {
+            holder_index: self.holder_index,
+            session_id: self.session_id,
+            hiding: point_from_hex(&self.hiding)?,
+            binding: point_from_hex(&self.binding)?,
+        })
+    }
+}
 
-// ---------------------------------------------------------------------------
-// Round 2: inner signature shares
-// ---------------------------------------------------------------------------
+/// The collected round-1 set. Aggregation is a no-op: the set itself is what
+/// a coordinator needs in order to build the outer package.
+pub type CommitmentList = Vec<InnerCommitment>;
 
-/// round 2 params broadcast to peers so they can produce their shares
+/// One outer signer's commitments, as the coordinator publishes them.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Round2Broadcast {
+#[serde(deny_unknown_fields)]
+pub struct OuterCommitment {
+    pub index: u32,
+    pub hiding: String,
+    pub binding: String,
+}
+
+/// Everything the coordinator must supply for round 2.
+///
+/// Note what is *not* here: a message the node is asked to take on faith, and
+/// a set of scalars it is asked to apply. The message is reconstructed from
+/// this node's own epoch and manifest; the scalars are recomputed and the
+/// supplied ones merely checked.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningRequest {
     pub session_id: [u8; 32],
-    pub outer_challenge_hex: String,
-    pub outer_lambda_hex: String,
-    pub active_indices: Vec<u32>,
-    /// message bytes so peers can compute inner binding factors
+    /// The application message being authorized, hex.
     pub message_hex: String,
+    /// The bytes the outer package was actually built over, hex — i.e. the
+    /// coordinator's `SigningContext::encode()`. Compared against this node's
+    /// own encoding; a mismatch is `MessageMismatch`.
+    pub signed_bytes_hex: String,
+    /// The nested position's index in the OUTER signing set.
+    pub nested_index: u32,
+    /// The outer group public key, canonical compressed, hex.
+    pub group_pubkey: String,
+    /// Every outer signer's commitments — the full set, not just ours.
+    pub outer_commitments: Vec<OuterCommitment>,
+    /// The inner round-1 commitment set this round is running over.
+    pub inner_commitments: Vec<InnerCommitment>,
+    /// The inner quorum actually signing.
+    pub active_indices: Vec<u32>,
+    /// The coordinator's outer binding factor, challenge and Lagrange
+    /// coefficient. Checked, never trusted.
+    pub outer_binding: String,
+    pub outer_challenge: String,
+    pub outer_lambda: String,
 }
 
+/// One inner holder's round-2 share.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InnerShare {
     pub session_id: [u8; 32],
     pub holder_index: u32,
-    pub response_hex: String,
+    /// `z_k`, canonical, hex.
+    pub response: String,
 }
 
 impl Contribution for InnerShare {
     type Id = u32;
-    fn contributor_id(&self) -> u32 { self.holder_index }
+    fn contributor_id(&self) -> u32 {
+        self.holder_index
+    }
 }
 
-/// round 2 aggregate: z_nested = Σ z_k
-#[derive(Clone, Debug)]
-pub struct NestedResponse {
-    pub z_nested: Scalar,
-    pub z_hex: String,
+/// The collected round-2 set. Summing is deliberately NOT done here: a share
+/// must be checked against its commitment and public share before it is folded
+/// in, which needs the whole request.
+pub type ShareList = Vec<InnerShare>;
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, thiserror::Error)]
+pub enum SigningError {
+    #[error("osst: {0}")]
+    Osst(OsstError),
+    #[error("no nonces for this session: round 1 was not run, or its nonces are spent")]
+    NoNonces,
+    #[error("this node has no key package; run the DKG first")]
+    NoShare,
+    #[error(
+        "request names nested position {asked}, this node is configured for {ours}"
+    )]
+    WrongNestedPosition { asked: u32, ours: u32 },
+    #[error("malformed request: {0}")]
+    Malformed(&'static str),
+    #[error("inner shares rejected from holders {0:?}")]
+    BadShares(Vec<u32>),
 }
-impl Aggregate for NestedResponse {}
+
+impl From<OsstError> for SigningError {
+    fn from(e: OsstError) -> Self {
+        SigningError::Osst(e)
+    }
+}
 
 // ---------------------------------------------------------------------------
-// Local node identity (holds our share, produces contributions)
+// Local signer
 // ---------------------------------------------------------------------------
 
+/// This node's share material and its live nonce state.
 pub struct LocalSigner {
     pub holder_index: u32,
-    pub share_scalar: Scalar,
-    /// ephemeral nonces for active sessions: session_id → (d, e)
-    nonces: std::collections::HashMap<[u8; 32], (Scalar, Scalar)>,
+    /// The nested position this node's share is evaluated at.
+    pub nested_position: u32,
+    /// DKG generation. The epoch of every [`SigningContext`] this node builds.
+    pub epoch: u64,
+    /// Roster fingerprint at generation time — the context's manifest hash.
+    pub manifest_hash: [u8; 32],
+    /// `σ_k`, this node's share of the nested position's outer secret.
+    /// `None` until a key package is loaded.
+    share_scalar: Option<PallasScalar>,
+    /// `P_j = σ_j·G` for every inner holder, for share verification.
+    public_shares: Vec<(u32, PallasPoint)>,
+    /// Live nonces, one per session. `InnerNonces` is not `Clone` and zeroizes
+    /// on drop, so taking one out of the map is what spends it.
+    nonces: BTreeMap<[u8; 32], InnerNonces<PallasScalar>>,
 }
 
 impl LocalSigner {
-    pub fn new(holder_index: u32, share_scalar: Scalar) -> Self {
-        Self { holder_index, share_scalar, nonces: std::collections::HashMap::new() }
+    pub fn new(
+        holder_index: u32,
+        nested_position: u32,
+        epoch: u64,
+        manifest_hash: [u8; 32],
+        share_scalar: Option<PallasScalar>,
+        public_shares: Vec<(u32, PallasPoint)>,
+    ) -> Self {
+        Self {
+            holder_index,
+            nested_position,
+            epoch,
+            manifest_hash,
+            share_scalar,
+            public_shares,
+            nonces: BTreeMap::new(),
+        }
     }
 
-    /// generate nonce commitment for round 1
+    /// Install share material from a key package.
+    pub fn install(&mut self, share: PallasScalar, public_shares: Vec<(u32, PallasPoint)>) {
+        self.share_scalar = Some(share);
+        self.public_shares = public_shares;
+    }
+
+    /// Whether this node can sign at all.
+    pub fn has_share(&self) -> bool {
+        self.share_scalar.is_some()
+    }
+
+    /// Public shares of the inner holders, for verified aggregation.
+    pub fn public_shares(&self) -> &[(u32, PallasPoint)] {
+        &self.public_shares
+    }
+
+    /// Round 1: sample nonces for `session_id` and publish the commitments.
     pub fn commit(&mut self, session_id: [u8; 32]) -> InnerCommitment {
         let mut rng = rand_core::OsRng;
-        let d = crate::random_scalar(&mut rng);
-        let e = crate::random_scalar(&mut rng);
-        let hiding: [u8; 32] = (Point::generator() * d).to_bytes().into();
-        let binding: [u8; 32] = (Point::generator() * e).to_bytes().into();
-        self.nonces.insert(session_id, (d, e));
-        InnerCommitment { session_id, holder_index: self.holder_index, hiding, binding, message_hex: None }
+        let (nonces, commitments) =
+            nested::inner_commit::<PallasPoint, _>(self.holder_index, session_id, &mut rng);
+        let wire = InnerCommitment {
+            session_id,
+            holder_index: self.holder_index,
+            hiding: point_hex(&commitments.hiding),
+            binding: point_hex(&commitments.binding),
+        };
+        self.nonces.insert(session_id, nonces);
+        wire
     }
 
-    /// produce signature share for round 2
-    pub fn sign(
-        &mut self,
-        session_id: &[u8; 32],
-        outer_challenge: Scalar,
-        outer_lambda: Scalar,
-        commitments: &[InnerCommitment],
-        active_indices: &[u32],
-        message: &[u8],
-    ) -> Option<InnerShare> {
-        let (d, e) = self.nonces.remove(session_id)?;
+    /// Whether this node has live nonces for a session.
+    pub fn has_nonces(&self, session_id: &[u8; 32]) -> bool {
+        self.nonces.contains_key(session_id)
+    }
 
-        // inner binding factor
-        let rho_inner = {
-            use sha2::{Sha512, Digest};
-            let mut h = Sha512::new();
-            h.update(b"frostito-inner-bind");
-            h.update(self.holder_index.to_le_bytes());
-            h.update((message.len() as u64).to_le_bytes());
-            h.update(message);
-            for c in commitments {
-                h.update(c.holder_index.to_le_bytes());
-                h.update(&c.hiding);
-                h.update(&c.binding);
-            }
-            let hash: [u8; 64] = h.finalize().into();
-            Scalar::from_uniform_bytes(&hash)
+    /// Round 2.
+    ///
+    /// The nonces are consumed whatever happens — they are moved into
+    /// `inner_sign_v2_with_context` — so a refusal is terminal for this
+    /// session and a retry needs a fresh round 1. That is the intended
+    /// behaviour: one commitment round, one share.
+    pub fn sign(&mut self, req: &SigningRequest) -> Result<InnerShare, SigningError> {
+        if req.nested_index != self.nested_position {
+            return Err(SigningError::WrongNestedPosition {
+                asked: req.nested_index,
+                ours: self.nested_position,
+            });
+        }
+        let share_scalar = self.share_scalar.ok_or(SigningError::NoShare)?;
+        let nonces = self
+            .nonces
+            .remove(&req.session_id)
+            .ok_or(SigningError::NoNonces)?;
+
+        let parsed = ParsedRequest::parse(req)?;
+
+        // The scalars the coordinator asserted are checked against the ones
+        // derived here; a disagreement is ChallengeMismatch.
+        InnerSigningParamsV2::<PallasScalar>::from_coordinator_checked::<PallasPoint>(
+            &parsed.outer_binding,
+            &parsed.outer_challenge,
+            &parsed.outer_lambda,
+            &parsed.package,
+            &parsed.group_pubkey,
+            req.nested_index,
+        )?;
+
+        // The context comes from OUR state. If the coordinator built the outer
+        // package for a different epoch or a different roster, these bytes
+        // differ from the package's message and inner_sign_v2 refuses.
+        let ctx = SigningContext::new(self.epoch, self.manifest_hash, &parsed.message);
+
+        let share = SecretShare::new(self.holder_index, share_scalar)?;
+        let request = NestedSigningRequest {
+            package: &parsed.package,
+            group_pubkey: &parsed.group_pubkey,
+            nested_index: req.nested_index,
+            session_id: req.session_id,
+            inner_commitments: &parsed.inner_commitments,
+            active_indices: &req.active_indices,
         };
 
-        // inner Lagrange coefficient
-        let mu_k = {
-            let x_i = Scalar::from(self.holder_index as u64);
-            let mut mu = Scalar::ONE;
-            for &idx_j in active_indices {
-                if idx_j == self.holder_index { continue; }
-                let x_j = Scalar::from(idx_j as u64);
-                mu = mu * x_j * (x_j - x_i).invert().unwrap();
-            }
-            mu
-        };
+        let sig = nested::inner_sign_v2_with_context::<PallasPoint>(
+            nonces, &share, &ctx, &request,
+        )?;
 
-        // z_{p,k} = d_k + ρ_inner_k·e_k + (λ_outer·c·μ_k)·σ_k
-        let z_k = d + rho_inner * e + outer_lambda * outer_challenge * mu_k * self.share_scalar;
-        let response_hex = hex::encode(z_k.to_repr().as_ref());
+        Ok(InnerShare {
+            session_id: req.session_id,
+            holder_index: sig.holder_index,
+            response: scalar_hex(&sig.response),
+        })
+    }
+}
 
-        Some(InnerShare {
-            session_id: *session_id,
-            holder_index: self.holder_index,
-            response_hex,
+/// A [`SigningRequest`] decoded into osst types.
+pub struct ParsedRequest {
+    pub message: Vec<u8>,
+    pub package: SigningPackage<PallasPoint>,
+    pub group_pubkey: PallasPoint,
+    pub inner_commitments: Vec<InnerCommitments<PallasPoint>>,
+    pub outer_binding: PallasScalar,
+    pub outer_challenge: PallasScalar,
+    pub outer_lambda: PallasScalar,
+}
+
+impl ParsedRequest {
+    pub fn parse(req: &SigningRequest) -> Result<Self, SigningError> {
+        let message = hex::decode(&req.message_hex)
+            .map_err(|_| SigningError::Malformed("message_hex is not hex"))?;
+        let signed_bytes = hex::decode(&req.signed_bytes_hex)
+            .map_err(|_| SigningError::Malformed("signed_bytes_hex is not hex"))?;
+        let group_pubkey = point_from_hex(&req.group_pubkey)
+            .ok_or(SigningError::Malformed("group_pubkey is not a canonical point"))?;
+
+        let outer: Vec<SigningCommitments<PallasPoint>> = req
+            .outer_commitments
+            .iter()
+            .map(|c| {
+                Ok(SigningCommitments {
+                    index: c.index,
+                    hiding: point_from_hex(&c.hiding).ok_or(SigningError::Malformed(
+                        "outer hiding commitment is not a canonical point",
+                    ))?,
+                    binding: point_from_hex(&c.binding).ok_or(SigningError::Malformed(
+                        "outer binding commitment is not a canonical point",
+                    ))?,
+                })
+            })
+            .collect::<Result<_, SigningError>>()?;
+
+        let inner_commitments: Vec<InnerCommitments<PallasPoint>> = req
+            .inner_commitments
+            .iter()
+            .map(|c| {
+                c.decode().ok_or(SigningError::Malformed(
+                    "inner commitment is not a canonical point",
+                ))
+            })
+            .collect::<Result<_, SigningError>>()?;
+
+        Ok(Self {
+            message,
+            package: SigningPackage::new(signed_bytes, outer)?,
+            group_pubkey,
+            inner_commitments,
+            outer_binding: scalar_from_hex(&req.outer_binding)
+                .ok_or(SigningError::Malformed("outer_binding is not a canonical scalar"))?,
+            outer_challenge: scalar_from_hex(&req.outer_challenge)
+                .ok_or(SigningError::Malformed("outer_challenge is not a canonical scalar"))?,
+            outer_lambda: scalar_from_hex(&req.outer_lambda)
+                .ok_or(SigningError::Malformed("outer_lambda is not a canonical scalar"))?,
         })
     }
 }
 
 // ---------------------------------------------------------------------------
-// Signing service: composes accumulator + broadcast + local signer
+// Signing service
 // ---------------------------------------------------------------------------
 
+/// Composes the accumulator, the peer transport and the local signer.
 pub struct SigningService {
     pub round1: ThresholdAccumulator<[u8; 32], InnerCommitment, CommitmentList>,
-    pub round2: ThresholdAccumulator<[u8; 32], InnerShare, NestedResponse>,
-    pub signer: std::sync::Arc<tokio::sync::Mutex<LocalSigner>>,
+    pub round2: ThresholdAccumulator<[u8; 32], InnerShare, ShareList>,
+    pub signer: Arc<Mutex<LocalSigner>>,
     pub peers: PeerSet,
-    /// message bytes per session
-    pub messages: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<[u8; 32], Vec<u8>>>>,
+    /// The round-2 request per session, as first seen.
+    pub requests: Arc<Mutex<BTreeMap<[u8; 32], SigningRequest>>>,
+    /// `z_nested` per session, once a verified quorum has been aggregated.
+    pub results: Arc<Mutex<BTreeMap<[u8; 32], String>>>,
 }
 
 impl Clone for SigningService {
@@ -170,167 +418,177 @@ impl Clone for SigningService {
             round2: self.round2.clone(),
             signer: self.signer.clone(),
             peers: self.peers.clone(),
-            messages: self.messages.clone(),
+            requests: self.requests.clone(),
+            results: self.results.clone(),
         }
     }
 }
 
 impl SigningService {
-    pub fn new(holder_index: u32, share_scalar: Scalar, threshold: usize, peers: PeerSet) -> Self {
+    pub fn new(signer: LocalSigner, threshold: usize, peers: PeerSet) -> Self {
         Self {
             round1: ThresholdAccumulator::new(threshold),
             round2: ThresholdAccumulator::new(threshold),
-            signer: std::sync::Arc::new(tokio::sync::Mutex::new(
-                LocalSigner::new(holder_index, share_scalar),
-            )),
+            signer: Arc::new(Mutex::new(signer)),
             peers,
-            messages: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            requests: Arc::new(Mutex::new(BTreeMap::new())),
+            results: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
-    /// initiate round 1: generate our commitment, broadcast, accumulate
-    pub async fn start_round1(&self, session_id: [u8; 32], message: Vec<u8>) -> InnerCommitment {
-        // store message
-        let msg_hex = hex::encode(&message);
-        self.messages.lock().await.insert(session_id, message);
-
-        // ensure session with aggregation function
-        self.round1.ensure_session(session_id, |contribs| {
-            CommitmentList(contribs.to_vec())
-        }).await;
-
-        // produce our commitment
-        let mut commitment = self.signer.lock().await.commit(session_id);
-        commitment.message_hex = Some(msg_hex);
-
-        // accumulate locally
+    /// Round 1: commit, accumulate locally, broadcast. Public data only.
+    pub async fn start_round1(&self, session_id: [u8; 32]) -> InnerCommitment {
+        self.round1
+            .ensure_session(session_id, |c| c.to_vec())
+            .await;
+        let commitment = self.signer.lock().await.commit(session_id);
         let _ = self.round1.accumulate(&session_id, commitment.clone()).await;
-
-        // broadcast (includes message so peers can store it)
         self.peers.broadcast("/sign/commitment", &commitment);
-
         commitment
     }
 
-    /// receive a peer's commitment: accumulate, auto-contribute if needed
-    pub async fn receive_commitment(&self, commitment: InnerCommitment) -> AccumulateResult<CommitmentList> {
+    /// Accept a peer's round-1 commitment, contributing our own if we have not.
+    pub async fn receive_commitment(
+        &self,
+        commitment: InnerCommitment,
+    ) -> AccumulateResult<CommitmentList> {
         let session_id = commitment.session_id;
-
-        // store message if provided
-        if let Some(ref msg_hex) = commitment.message_hex {
-            if let Ok(msg_bytes) = hex::decode(msg_hex) {
-                self.messages.lock().await
-                    .entry(session_id)
-                    .or_insert(msg_bytes);
-            }
-        }
-
-        // ensure session exists
-        self.round1.ensure_session(session_id, |contribs| {
-            CommitmentList(contribs.to_vec())
-        }).await;
-
-        // accumulate
+        self.round1
+            .ensure_session(session_id, |c| c.to_vec())
+            .await;
         let result = self.round1.accumulate(&session_id, commitment).await;
 
-        // auto-contribute if we haven't yet
-        let holder_index = self.signer.lock().await.holder_index;
-        let already_contributed = self.round1.contributions(&session_id).await
-            .iter()
-            .any(|c| c.holder_index == holder_index);
-
-        if !already_contributed {
-            let our_commitment = self.signer.lock().await.commit(session_id);
-            let _ = self.round1.accumulate(&session_id, our_commitment.clone()).await;
-            self.peers.broadcast("/sign/commitment", &our_commitment);
+        let mut signer = self.signer.lock().await;
+        if !signer.has_nonces(&session_id) {
+            let ours = signer.commit(session_id);
+            drop(signer);
+            let _ = self.round1.accumulate(&session_id, ours.clone()).await;
+            self.peers.broadcast("/sign/commitment", &ours);
         }
-
         result
     }
 
-    /// initiate round 2: produce our signature share, broadcast, accumulate
-    pub async fn start_round2(
-        &self,
-        session_id: [u8; 32],
-        outer_challenge: Scalar,
-        outer_lambda: Scalar,
-        active_indices: Vec<u32>,
-    ) -> Option<InnerShare> {
-        let commitments = self.round1.contributions(&session_id).await;
-        let message = self.messages.lock().await.get(&session_id)?.clone();
+    /// Round 2: produce our share, accumulate it, and pass the request on so
+    /// peers produce theirs.
+    ///
+    /// The request is relayed verbatim — every field in it is public, and each
+    /// peer re-derives everything that matters from it anyway.
+    pub async fn start_round2(&self, req: SigningRequest) -> Result<InnerShare, SigningError> {
+        let session_id = req.session_id;
+        self.requests.lock().await.insert(session_id, req.clone());
+        self.round2
+            .ensure_session(session_id, |s| s.to_vec())
+            .await;
 
-        // ensure round2 session
-        self.round2.ensure_session(session_id, |shares| {
-            let mut z = Scalar::ZERO;
-            for s in shares {
-                if let Some(bytes) = hex::decode(&s.response_hex).ok() {
-                    if bytes.len() == 32 {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&bytes);
-                        let ct = Scalar::from_repr(arr.into());
-                        if bool::from(ct.is_some()) {
-                            z = z + ct.unwrap();
-                        }
-                    }
-                }
-            }
-            NestedResponse {
-                z_hex: hex::encode(z.to_repr().as_ref()),
-                z_nested: z,
-            }
-        }).await;
-
-        let share = self.signer.lock().await.sign(
-            &session_id, outer_challenge, outer_lambda,
-            &commitments, &active_indices, &message,
-        )?;
-
+        let share = self.signer.lock().await.sign(&req)?;
         let _ = self.round2.accumulate(&session_id, share.clone()).await;
         self.peers.broadcast("/sign/share", &share);
-
-        // broadcast round2 params so peers produce their shares too
-        self.peers.broadcast("/sign/round2", &Round2Broadcast {
-            session_id,
-            outer_challenge_hex: hex::encode(outer_challenge.to_repr().as_ref()),
-            outer_lambda_hex: hex::encode(outer_lambda.to_repr().as_ref()),
-            active_indices,
-            message_hex: hex::encode(&message),
-        });
-
-        Some(share)
+        self.peers.broadcast("/sign/round2", &req);
+        self.try_aggregate(&session_id).await;
+        Ok(share)
     }
 
-    /// receive a peer's signature share
-    // TODO: before accumulating, verify each share against its commitment:
-    //   z_k * G == R_k + (lambda_outer * c * mu_k) * Y_k
-    // where R_k = D_k + rho_k * E_k is the holder's bound commitment.
-    // this requires storing per-holder verification keys (Y_k) and the
-    // commitment list from round 1. without this check a malicious holder
-    // can submit a garbage share that corrupts z_nested silently.
-    pub async fn receive_share(&self, share: InnerShare) -> AccumulateResult<NestedResponse> {
+    /// Accept a peer's round-2 share.
+    pub async fn receive_share(&self, share: InnerShare) -> AccumulateResult<ShareList> {
         let session_id = share.session_id;
-
-        // ensure session (aggregate fn same as start_round2)
-        self.round2.ensure_session(session_id, |shares| {
-            let mut z = Scalar::ZERO;
-            for s in shares {
-                if let Some(bytes) = hex::decode(&s.response_hex).ok() {
-                    if bytes.len() == 32 {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&bytes);
-                        let ct = Scalar::from_repr(arr.into());
-                        if bool::from(ct.is_some()) {
-                            z = z + ct.unwrap();
-                        }
-                    }
-                }
-            }
-            NestedResponse {
-                z_hex: hex::encode(z.to_repr().as_ref()),
-                z_nested: z,
-            }
-        }).await;
-
-        self.round2.accumulate(&session_id, share).await
+        self.round2
+            .ensure_session(session_id, |s| s.to_vec())
+            .await;
+        let result = self.round2.accumulate(&session_id, share).await;
+        self.try_aggregate(&session_id).await;
+        result
     }
+
+    /// `z_nested` for a session, if a verified quorum has been aggregated.
+    pub async fn result(&self, session_id: &[u8; 32]) -> Option<String> {
+        self.results.lock().await.get(session_id).cloned()
+    }
+
+    /// Verify and aggregate, if the quorum's shares are all in.
+    ///
+    /// Every share is checked as `z_k·G == (D_k + ρ·E_k) + (λ·c·μ_k)·P_k`
+    /// before it is folded in. An unverified sum silently produces a signature
+    /// that fails with no indication of which holder was at fault; this names
+    /// them.
+    async fn try_aggregate(&self, session_id: &[u8; 32]) -> Option<String> {
+        if self.results.lock().await.contains_key(session_id) {
+            return self.result(session_id).await;
+        }
+        let req = self.requests.lock().await.get(session_id).cloned()?;
+        let collected = self.round2.contributions(session_id).await;
+        if !req
+            .active_indices
+            .iter()
+            .all(|k| collected.iter().any(|s| s.holder_index == *k))
+        {
+            return None;
+        }
+
+        match self.aggregate(&req, &collected).await {
+            Ok(z) => {
+                let hex = scalar_hex(&z);
+                self.results.lock().await.insert(*session_id, hex.clone());
+                Some(hex)
+            }
+            Err(e) => {
+                tracing::error!("aggregation failed: {}", e);
+                None
+            }
+        }
+    }
+
+    async fn aggregate(
+        &self,
+        req: &SigningRequest,
+        collected: &[InnerShare],
+    ) -> Result<PallasScalar, SigningError> {
+        let parsed = ParsedRequest::parse(req)?;
+        let params = InnerSigningParamsV2::<PallasScalar>::from_outer::<PallasPoint>(
+            &parsed.package,
+            &parsed.group_pubkey,
+            req.nested_index,
+        )?;
+
+        let mut sigs = Vec::with_capacity(collected.len());
+        for s in collected {
+            if !req.active_indices.contains(&s.holder_index) {
+                continue;
+            }
+            let response = scalar_from_hex(&s.response)
+                .ok_or(SigningError::Malformed("share response is not a canonical scalar"))?;
+            sigs.push(nested::InnerSignatureShare {
+                holder_index: s.holder_index,
+                response,
+            });
+        }
+
+        let public_shares = self.signer.lock().await.public_shares().to_vec();
+        nested::aggregate_inner_shares_verified::<PallasPoint>(
+            &sigs,
+            &parsed.inner_commitments,
+            &public_shares,
+            &params,
+            &req.active_indices,
+        )
+        .map_err(SigningError::BadShares)
+    }
+}
+
+/// The nested position's outer commitment pair `(D_nested, E_nested)` for a
+/// round-1 set — what a coordinator puts in the outer package under the nested
+/// index.
+pub fn nested_commitment_pair(
+    session_id: &[u8; 32],
+    commitments: &[InnerCommitment],
+) -> Result<(PallasPoint, PallasPoint), SigningError> {
+    let decoded: Vec<InnerCommitments<PallasPoint>> = commitments
+        .iter()
+        .map(|c| {
+            c.decode()
+                .ok_or(SigningError::Malformed("inner commitment is not a canonical point"))
+        })
+        .collect::<Result<_, SigningError>>()?;
+    Ok(nested::aggregate_inner_commitment_pair::<PallasPoint>(
+        session_id, &decoded,
+    )?)
 }

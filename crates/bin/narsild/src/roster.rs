@@ -1,0 +1,306 @@
+//! The signed roster: who is in the group, and how to reach each of them.
+//!
+//! Every node is configured with the same index→peer map. A peer entry is
+//! `(index, x25519 public key, URL)`; the roster is the sorted list of them.
+//!
+//! # Why the roster is hashed
+//!
+//! `osst::sealed` binds a round-2 package to the ceremony by putting the
+//! participant set, the session id and the round number in the Noise
+//! prologue. Its own [`osst::sealed::SealedRoster`] carries only
+//! `(index, pubkey)` — a transport is out of scope for the crate. narsild's
+//! roster additionally carries the URL each index is reachable at, which is
+//! exactly the datum an attacker would want to change: redirect a recipient's
+//! packages to a host it controls and the sealing buys nothing if nobody
+//! notices the substitution.
+//!
+//! So the URLs enter the prologue transitively. [`Roster::hash`] covers
+//! `(index, pubkey, url)` for every member; the ceremony's session id is
+//! derived from that hash and the epoch ([`Roster::session_id`]); and that
+//! session id is what [`Roster::sealed_roster`] hands to osst. Two nodes that
+//! disagree about any member's URL, key or index derive different session ids,
+//! so their sealed packages simply do not open.
+//!
+//! The same hash is the `manifest_hash` of the signing context
+//! (`osst::SigningContext`): the roster *is* the group's membership manifest,
+//! so a signature made under one roster is not valid under another.
+
+use osst::sealed::SealedRoster;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+/// Domain tag for [`Roster::hash`].
+pub const ROSTER_DOMAIN: &[u8] = b"narsild/roster/v1";
+
+/// Domain tag for [`Roster::session_id`].
+pub const SESSION_DOMAIN: &[u8] = b"narsild/dkg-session/v1";
+
+/// One member of the group.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Peer {
+    /// 1-indexed holder index. Also the Shamir index.
+    pub index: u32,
+    /// Base URL of that node's narsild, without a trailing slash.
+    pub url: String,
+    /// That node's static X25519 public key.
+    pub x25519_pub: [u8; 32],
+}
+
+/// Errors from building or reading a roster.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum RosterError {
+    #[error("roster is empty")]
+    Empty,
+    #[error("holder indices are 1-indexed; index 0 is not a member")]
+    ZeroIndex,
+    #[error("duplicate holder index {0}")]
+    DuplicateIndex(u32),
+    #[error("duplicate x25519 public key for indices {0} and {1}")]
+    DuplicateKey(u32, u32),
+    #[error("index {0} is not on the roster")]
+    Unknown(u32),
+    #[error("malformed peer specification {0:?}: expected index=url=x25519_pubkey_hex")]
+    Malformed(String),
+}
+
+/// The full participant set, sorted by index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Roster {
+    members: Vec<Peer>,
+}
+
+impl Roster {
+    /// Build a roster. Order does not matter; the result is sorted by index.
+    ///
+    /// Duplicate indices and duplicate static keys are both refused: two
+    /// members sharing a key means one can open the other's sealed packages,
+    /// which is the property round 2 exists to deny.
+    pub fn new(mut members: Vec<Peer>) -> Result<Self, RosterError> {
+        if members.is_empty() {
+            return Err(RosterError::Empty);
+        }
+        members.sort_by(|a, b| a.index.cmp(&b.index));
+        if members[0].index == 0 {
+            return Err(RosterError::ZeroIndex);
+        }
+        for w in members.windows(2) {
+            if w[0].index == w[1].index {
+                return Err(RosterError::DuplicateIndex(w[0].index));
+            }
+        }
+        for i in 0..members.len() {
+            for j in (i + 1)..members.len() {
+                if members[i].x25519_pub == members[j].x25519_pub {
+                    return Err(RosterError::DuplicateKey(members[i].index, members[j].index));
+                }
+            }
+        }
+        Ok(Self { members })
+    }
+
+    /// Parse a roster from `index=url=x25519_pubkey_hex` specifications.
+    pub fn parse(specs: &[String]) -> Result<Self, RosterError> {
+        let mut members = Vec::with_capacity(specs.len());
+        for spec in specs {
+            let parts: Vec<&str> = spec.splitn(3, '=').collect();
+            if parts.len() != 3 {
+                return Err(RosterError::Malformed(spec.clone()));
+            }
+            let index: u32 = parts[0]
+                .trim()
+                .parse()
+                .map_err(|_| RosterError::Malformed(spec.clone()))?;
+            let url = parts[1].trim().trim_end_matches('/').to_string();
+            if url.is_empty() {
+                return Err(RosterError::Malformed(spec.clone()));
+            }
+            let key_bytes =
+                hex::decode(parts[2].trim()).map_err(|_| RosterError::Malformed(spec.clone()))?;
+            let x25519_pub: [u8; 32] = key_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| RosterError::Malformed(spec.clone()))?;
+            members.push(Peer {
+                index,
+                url,
+                x25519_pub,
+            });
+        }
+        Self::new(members)
+    }
+
+    /// Members, sorted by index.
+    pub fn members(&self) -> &[Peer] {
+        &self.members
+    }
+
+    /// Number of members.
+    pub fn len(&self) -> u32 {
+        self.members.len() as u32
+    }
+
+    /// Member indices, ascending.
+    pub fn indices(&self) -> Vec<u32> {
+        self.members.iter().map(|m| m.index).collect()
+    }
+
+    /// Look up a member.
+    pub fn get(&self, index: u32) -> Result<&Peer, RosterError> {
+        self.members
+            .iter()
+            .find(|m| m.index == index)
+            .ok_or(RosterError::Unknown(index))
+    }
+
+    /// The roster fingerprint: SHA-256 over the sorted `(index, pubkey, url)`
+    /// triples, every variable-length field length-prefixed so that two
+    /// different rosters cannot hash alike by rearranging characters across a
+    /// field boundary.
+    pub fn hash(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(ROSTER_DOMAIN);
+        h.update((self.members.len() as u64).to_le_bytes());
+        for m in &self.members {
+            h.update(m.index.to_le_bytes());
+            h.update(m.x25519_pub);
+            h.update((m.url.len() as u64).to_le_bytes());
+            h.update(m.url.as_bytes());
+        }
+        h.finalize().into()
+    }
+
+    /// The ceremony session id for `epoch`: deterministic, so every node
+    /// derives it without a negotiation round, and different on any roster or
+    /// epoch change.
+    pub fn session_id(&self, epoch: u64) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(SESSION_DOMAIN);
+        h.update(self.hash());
+        h.update(epoch.to_le_bytes());
+        h.finalize().into()
+    }
+
+    /// The osst view of this roster for `epoch`: `(index, pubkey)` pairs under
+    /// the session id derived above.
+    pub fn sealed_roster(&self, epoch: u64) -> Result<SealedRoster, osst::OsstError> {
+        let pairs: Vec<(u32, [u8; 32])> = self
+            .members
+            .iter()
+            .map(|m| (m.index, m.x25519_pub))
+            .collect();
+        SealedRoster::new(&pairs, self.session_id(epoch))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn peer(index: u32, url: &str, key: u8) -> Peer {
+        Peer {
+            index,
+            url: url.to_string(),
+            x25519_pub: [key; 32],
+        }
+    }
+
+    fn three() -> Vec<Peer> {
+        vec![
+            peer(1, "http://a:9200", 1),
+            peer(2, "http://b:9200", 2),
+            peer(3, "http://c:9200", 3),
+        ]
+    }
+
+    #[test]
+    fn the_hash_does_not_depend_on_the_order_entries_arrive_in() {
+        let mut shuffled = three();
+        shuffled.reverse();
+        assert_eq!(
+            Roster::new(three()).unwrap().hash(),
+            Roster::new(shuffled).unwrap().hash()
+        );
+    }
+
+    #[test]
+    fn the_hash_covers_the_url_as_well_as_the_key_and_index() {
+        let base = Roster::new(three()).unwrap().hash();
+
+        let mut other_url = three();
+        other_url[1].url = "http://evil:9200".into();
+        assert_ne!(base, Roster::new(other_url).unwrap().hash());
+
+        let mut other_key = three();
+        other_key[1].x25519_pub = [0x77; 32];
+        assert_ne!(base, Roster::new(other_key).unwrap().hash());
+
+        let mut other_index = three();
+        other_index[2].index = 4;
+        assert_ne!(base, Roster::new(other_index).unwrap().hash());
+    }
+
+    /// Length prefixes, not concatenation: moving a character across the
+    /// index/URL boundary must not preserve the hash.
+    #[test]
+    fn the_hash_is_unambiguous_across_field_boundaries() {
+        let a = Roster::new(vec![peer(1, "http://a:9200x", 1), peer(2, "http://b", 2)]).unwrap();
+        let b = Roster::new(vec![peer(1, "http://a:9200", 1), peer(2, "xhttp://b", 2)]).unwrap();
+        assert_ne!(a.hash(), b.hash());
+    }
+
+    #[test]
+    fn the_session_id_changes_with_the_epoch_and_with_the_roster() {
+        let r = Roster::new(three()).unwrap();
+        assert_ne!(r.session_id(0), r.session_id(1));
+
+        let mut moved = three();
+        moved[0].url = "http://a2:9200".into();
+        let r2 = Roster::new(moved).unwrap();
+        assert_ne!(r.session_id(7), r2.session_id(7));
+    }
+
+    /// The property the derivation exists for: a URL substitution reaches the
+    /// Noise prologue, so a package sealed under the honest roster does not
+    /// open under the tampered one.
+    #[test]
+    fn a_url_substitution_changes_the_sealed_prologue() {
+        let r = Roster::new(three()).unwrap();
+        let mut moved = three();
+        moved[2].url = "http://attacker:9200".into();
+        let r2 = Roster::new(moved).unwrap();
+        assert_ne!(
+            r.sealed_roster(0).unwrap().prologue(2),
+            r2.sealed_roster(0).unwrap().prologue(2)
+        );
+    }
+
+    #[test]
+    fn malformed_rosters_are_refused() {
+        assert_eq!(Roster::new(vec![]), Err(RosterError::Empty));
+        assert_eq!(
+            Roster::new(vec![peer(0, "http://a", 1)]),
+            Err(RosterError::ZeroIndex)
+        );
+        assert_eq!(
+            Roster::new(vec![peer(1, "http://a", 1), peer(1, "http://b", 2)]),
+            Err(RosterError::DuplicateIndex(1))
+        );
+        assert_eq!(
+            Roster::new(vec![peer(1, "http://a", 9), peer(2, "http://b", 9)]),
+            Err(RosterError::DuplicateKey(1, 2))
+        );
+    }
+
+    #[test]
+    fn peers_parse_from_index_url_key_specs() {
+        let specs = vec![
+            format!("1=http://a:9200/={}", hex::encode([1u8; 32])),
+            format!("2=http://b:9200={}", hex::encode([2u8; 32])),
+        ];
+        let r = Roster::parse(&specs).unwrap();
+        assert_eq!(r.indices(), vec![1, 2]);
+        assert_eq!(r.get(1).unwrap().url, "http://a:9200");
+        assert!(Roster::parse(&["1=http://a".to_string()]).is_err());
+        assert!(Roster::parse(&["1=http://a=zz".to_string()]).is_err());
+    }
+}

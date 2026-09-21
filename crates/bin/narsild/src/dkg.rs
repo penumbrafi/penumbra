@@ -1,373 +1,765 @@
-//! distributed interleaved DKG for nested FROST
+//! Distributed interleaved DKG for the nested FROST position.
 //!
-//! each narsild node acts as one dealer in `outer_t` independent Feldman VSS
-//! ceremonies. the result: every node holds an InnerShare — shamir shares of
-//! each outer polynomial coefficient. nobody learns the coefficients.
+//! Each narsild node acts as one dealer in `outer_t` independent Feldman VSS
+//! ceremonies — one per coefficient of the nested position's outer polynomial
+//! — so the inner group ends up holding Shamir shares of each coefficient and
+//! nobody learns a coefficient.
 //!
-//! protocol:
-//!   round 1: each node generates outer_t dealers, broadcasts Feldman commitments
-//!   round 2: each node sends subshares to every other node
-//!   round 3: each node verifies subshares, aggregates into final share
+//! ```text
+//! round 1  broadcast  Feldman commitments + proof of knowledge of a_0
+//! round 2  direct     one SEALED package per recipient, to that recipient only
+//! round 3  local      open, Feldman-check, aggregate
+//! ```
 //!
-//! uses osst::dkg::Dealer for the Feldman VSS (Pallas curve).
+//! # Round 2 is sealed, and there is no other kind (D-1, D-2)
+//!
+//! The previous implementation serialized each sub-share as a hex scalar and
+//! *broadcast* the message for every recipient to every peer. A dealer's
+//! polynomial has degree `t-1` and is pinned down by `t` points, so round 2
+//! put `n-1` evaluations of every dealer's polynomial in front of every node:
+//! for any `n > t` — 2-of-3 included — a single participant interpolates the
+//! coefficients and reconstructs the group signing key. That is D-1 (Critical)
+//! of SECURITY-REVIEW-2026-09.
+//!
+//! Two things changed, and both are needed:
+//!
+//! 1. **The wire type for round 2 is the sealed ciphertext.** [`SealedEntry`]
+//!    carries `osst::sealed::SealedSubShare::ciphertext` and nothing else;
+//!    there is no plaintext sub-share type in this crate any more, so there is
+//!    no code path that can emit one. Both round-2 types are
+//!    `deny_unknown_fields`, so a peer speaking the old protocol is rejected
+//!    at deserialization rather than half-understood.
+//! 2. **Each package goes to its recipient and to nobody else.**
+//!    [`round2_messages`] returns one message per recipient and the caller
+//!    delivers each with `PeerSet::send_to`. Sealing means a misdelivered
+//!    package discloses nothing (D-2: the Noise `ss` mix binds the sender, the
+//!    responder's static key binds the recipient, the roster-derived prologue
+//!    binds the ceremony, and a digest inside the plaintext binds the dealer's
+//!    Feldman commitment) — but not handing `n-1` packages to every node is
+//!    the part of the fix that does not depend on the crypto being right.
+//!
+//! `open_subshare` runs the Feldman check itself and names the dealer on
+//! failure. A failure is a [`Complaint`], and any complaint aborts the
+//! ceremony: with a roster fixed by configuration there is no honest reason
+//! for a member to deal a bad share, and silently continuing with a smaller
+//! qualified set is how a partition turns into two groups holding different
+//! keys.
 
-use crate::accumulator::{AccumulateResult, Contribution, Aggregate, ThresholdAccumulator};
-use crate::broadcast::PeerSet;
-use osst::curve::OsstPoint;
+use crate::codec::{point_from_hex, point_hex, scalar_hex};
+use crate::keypackage::{KeyPackage, KEY_PACKAGE_FORMAT};
+use crate::roster::Roster;
 use osst::dkg;
 use osst::reshare::DealerCommitment;
+use osst::sealed::{self, SealedRoster, SealedSubShare};
+use osst::OsstError;
 use pasta_curves::pallas::Point as PallasPoint;
 use pasta_curves::pallas::Scalar as PallasScalar;
-use pasta_curves::group::{ff::{Field, PrimeField}, GroupEncoding};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
-/// Feldman commitment for one coefficient's DKG from one dealer
+/// Round number mixed into the Noise prologue for sub-share delivery.
+///
+/// Cross-coefficient replay does not need a separate round byte: the sealed
+/// plaintext carries a digest of the dealer's Feldman commitment for *that*
+/// coefficient, and `open_subshare` checks it against the commitment the
+/// recipient looks up by `(coeff_index, dealer_index)` from round 1. A package
+/// moved between coefficients fails as `InvalidSubShare`.
+pub const ROUND_SUBSHARE: u8 = 2;
+
+// ---------------------------------------------------------------------------
+// Wire types
+// ---------------------------------------------------------------------------
+
+/// One dealer's Feldman commitment for one outer coefficient, with the
+/// Komlo–Goldberg proof of knowledge of its constant term (K-1).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DkgCommitmentMsg {
-    /// which outer polynomial coefficient (0-indexed)
+    /// Which outer polynomial coefficient (0-indexed).
     pub coeff_index: u32,
-    /// dealer's node index (1-indexed)
+    /// Dealer's roster index (1-indexed).
     pub dealer_index: u32,
-    /// g^{coeff_j} for each polynomial term (compressed points, hex)
+    /// `g^{c_j}` for each polynomial term, canonical compressed, hex.
     pub commitments: Vec<String>,
+    /// Proof of knowledge commitment `R = g^k`, canonical compressed, hex.
+    pub pok_r: String,
+    /// Proof of knowledge response `z = k + e·a_0`, canonical, hex.
+    pub pok_z: String,
 }
 
-/// subshare from one dealer to one recipient for one coefficient
+/// Round 1: everything one node publishes. Public data; broadcast.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DkgSubshareMsg {
-    pub coeff_index: u32,
-    pub dealer_index: u32,
-    pub recipient_index: u32,
-    /// f_i(j) scalar value (hex)
-    pub value_hex: String,
-}
-
-/// round 1 broadcast: all commitments from one node
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DkgRound1Broadcast {
     pub dealer_index: u32,
-    /// commitments for each coefficient (outer_t entries)
+    /// The DKG generation this ceremony is producing. Binds the proofs of
+    /// knowledge, so one ceremony's proof cannot be replayed into another.
+    pub epoch: u64,
+    /// The sender's roster fingerprint, hex. A mismatch means the two nodes
+    /// disagree about the participant set and must not proceed.
+    pub roster_hash: String,
+    /// One entry per outer coefficient.
     pub coefficients: Vec<DkgCommitmentMsg>,
 }
 
-/// round 2 message: subshares for a specific recipient
+/// One sealed sub-share: the Noise_K message and the coefficient it belongs
+/// to. The scalar is inside the ciphertext and appears nowhere else.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SealedEntry {
+    pub coeff_index: u32,
+    /// `ephemeral ‖ ciphertext ‖ tag`, hex.
+    pub ciphertext: String,
+}
+
+/// Round 2: what one dealer sends to ONE recipient. Never broadcast.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DkgRound2Msg {
     pub dealer_index: u32,
     pub recipient_index: u32,
-    /// subshares for each coefficient
-    pub subshares: Vec<DkgSubshareMsg>,
+    pub epoch: u64,
+    /// One sealed package per outer coefficient.
+    pub sealed: Vec<SealedEntry>,
 }
 
-/// DKG result for one node
+/// A recipient's accusation against a dealer, naming the dealer index.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Complaint {
+    pub complainant_index: u32,
+    pub dealer_index: u32,
+    pub coeff_index: u32,
+    pub reason: String,
+}
+
+/// The ceremony's output for one node.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DkgResult {
-    /// this node's index (1-indexed)
     pub holder_index: u32,
-    /// shamir share of each outer polynomial coefficient
-    /// coefficient_shares[j] = this node's share of coefficient j
-    pub coefficient_shares: Vec<String>, // hex scalars
-    /// g^{a_j} for each coefficient (public, same for all nodes)
-    pub coeff_commitments: Vec<String>, // hex points
-    /// inner threshold
+    pub epoch: u64,
+    pub roster_hash: String,
+    /// Shamir share of each outer coefficient, hex scalars.
+    pub coefficient_shares: Vec<String>,
+    /// `g^{a_j}` for each outer coefficient, hex points. Same on every node.
+    pub coeff_commitments: Vec<String>,
+    /// `verification_shares[j][k-1] = g^{s_{j,k}}`: the point holder `k`'s
+    /// share of coefficient `j` commits to. Public, and identical on every
+    /// node.
+    pub verification_shares: Vec<Vec<String>>,
     pub inner_threshold: u32,
-    /// inner n
     pub inner_n: u32,
-    /// outer threshold
     pub outer_threshold: u32,
 }
 
-/// DKG ceremony state
+impl DkgResult {
+    /// Persistable form.
+    pub fn key_package(&self) -> KeyPackage {
+        KeyPackage {
+            format: KEY_PACKAGE_FORMAT,
+            epoch: self.epoch,
+            roster_hash: self.roster_hash.clone(),
+            holder_index: self.holder_index,
+            coefficient_shares: self.coefficient_shares.clone(),
+            coeff_commitments: self.coeff_commitments.clone(),
+            verification_shares: self.verification_shares.clone(),
+            inner_threshold: self.inner_threshold,
+            inner_n: self.inner_n,
+            outer_threshold: self.outer_threshold,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, thiserror::Error)]
+pub enum DkgError {
+    #[error("osst: {0}")]
+    Osst(OsstError),
+    #[error("roster: {0}")]
+    Roster(#[from] crate::roster::RosterError),
+    #[error(
+        "this DKG needs roster indices 1..={0} exactly; \
+         osst::dkg::DkgState addresses dealers positionally"
+    )]
+    NonContiguousRoster(u32),
+    #[error("epoch mismatch: ours is {ours}, peer {peer_index} says {theirs}")]
+    EpochMismatch {
+        peer_index: u32,
+        ours: u64,
+        theirs: u64,
+    },
+    #[error("roster mismatch with peer {0}: it has a different participant set")]
+    RosterMismatch(u32),
+    #[error("malformed round-1 message from dealer {0}: {1}")]
+    MalformedRound1(u32, &'static str),
+    #[error("malformed round-2 message from dealer {0}: {1}")]
+    MalformedRound2(u32, &'static str),
+    #[error("round-2 package addressed to {addressed}, we are {ours}")]
+    NotOurs { addressed: u32, ours: u32 },
+    #[error("no round-1 commitment for coefficient {coeff_index} from dealer {dealer_index}")]
+    MissingCommitment { coeff_index: u32, dealer_index: u32 },
+    #[error("DKG aborted by complaint against dealer {}: {}", .0.dealer_index, .0.reason)]
+    Aborted(Complaint),
+    #[error("DKG already aborted by complaint against dealer {}", .0.dealer_index)]
+    AlreadyAborted(Complaint),
+    #[error("round 1 is not complete: {got}/{need} dealers have committed")]
+    Round1Incomplete { got: usize, need: usize },
+    #[error("round 2 is not complete for coefficient {coeff_index}: {got}/{need}")]
+    Round2Incomplete {
+        coeff_index: u32,
+        got: usize,
+        need: usize,
+    },
+}
+
+impl From<OsstError> for DkgError {
+    fn from(e: OsstError) -> Self {
+        DkgError::Osst(e)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ceremony
+// ---------------------------------------------------------------------------
+
+/// One DKG ceremony, with no transport of its own.
+///
+/// The ceremony produces messages and consumes messages; delivering them is
+/// the caller's job. That is what lets the whole protocol run in-process in a
+/// test, and it is why round 2 cannot accidentally reach `broadcast`.
 pub struct DkgCeremony {
     pub holder_index: u32,
+    pub epoch: u64,
     pub inner_n: u32,
     pub inner_t: u32,
     pub outer_t: u32,
-    /// our dealers (one per outer coefficient)
+    roster: Arc<Roster>,
+    roster_hash_hex: String,
+    sealed_roster: SealedRoster,
+    x25519_secret: [u8; 32],
+    /// Our dealers, one per outer coefficient.
     dealers: Vec<dkg::Dealer<PallasPoint>>,
-    /// collected commitments: coeff_index → dealer_index → DealerCommitment
-    commitments: HashMap<u32, HashMap<u32, DealerCommitment<PallasPoint>>>,
-    /// collected subshares: coeff_index → dealer_index → scalar
-    subshares: HashMap<u32, HashMap<u32, PallasScalar>>,
-    /// how many dealers actually committed in round 1 (may be < inner_n)
-    actual_dealers: u32,
-    /// whether round 1 was closed (no more commitments accepted)
-    round1_closed: bool,
-    /// final result
+    /// Round-1 state, one per outer coefficient. Verifies proofs of knowledge.
+    states: Vec<dkg::DkgState<PallasPoint>>,
+    /// Opened sub-shares: `subshares[coeff][dealer] = f_dealer(us)`.
+    subshares: Vec<BTreeMap<u32, PallasScalar>>,
+    /// The complaint that aborted the ceremony, if any.
+    aborted: Option<Complaint>,
     pub result: Option<DkgResult>,
-    peers: PeerSet,
 }
 
 impl DkgCeremony {
+    /// Start a ceremony.
+    ///
+    /// `inner_t` is the inner threshold, `outer_t` the number of outer
+    /// polynomial coefficients (i.e. the outer threshold). The participant set
+    /// is the roster, in full: a member that does not commit stalls the
+    /// ceremony rather than being dropped from it, because the roster is
+    /// configuration and disagreement about who is in the group is exactly
+    /// what the roster hash exists to detect.
     pub fn new(
         holder_index: u32,
-        inner_n: u32,
+        roster: Arc<Roster>,
+        x25519_secret: [u8; 32],
+        epoch: u64,
         inner_t: u32,
         outer_t: u32,
-        peers: PeerSet,
-    ) -> Self {
+    ) -> Result<Self, DkgError> {
+        let n = roster.len();
+        if roster.indices() != (1..=n).collect::<Vec<u32>>() {
+            return Err(DkgError::NonContiguousRoster(n));
+        }
+        roster.get(holder_index)?;
+
         let mut rng = rand_core::OsRng;
-        let dealers: Vec<dkg::Dealer<PallasPoint>> = (0..outer_t)
-            .map(|_| dkg::Dealer::new(holder_index, inner_t, &mut rng))
+        let mut dealers = Vec::with_capacity(outer_t as usize);
+        for _ in 0..outer_t {
+            dealers.push(dkg::Dealer::<PallasPoint>::new(
+                holder_index,
+                inner_t,
+                &mut rng,
+            )?);
+        }
+
+        let states = (0..outer_t)
+            .map(|_| dkg::DkgState::<PallasPoint>::new(epoch, inner_t, n))
             .collect();
 
-        Self {
+        Ok(Self {
             holder_index,
-            inner_n,
+            epoch,
+            inner_n: n,
             inner_t,
             outer_t,
+            roster_hash_hex: hex::encode(roster.hash()),
+            sealed_roster: roster.sealed_roster(epoch)?,
+            roster,
+            x25519_secret,
             dealers,
-            commitments: HashMap::new(),
-            subshares: HashMap::new(),
-            actual_dealers: 0,
-            round1_closed: false,
+            states,
+            subshares: (0..outer_t).map(|_| BTreeMap::new()).collect(),
+            aborted: None,
             result: None,
-            peers,
+        })
+    }
+
+    /// The complaint that aborted this ceremony, if any.
+    pub fn abort_reason(&self) -> Option<&Complaint> {
+        self.aborted.as_ref()
+    }
+
+    fn check_live(&self) -> Result<(), DkgError> {
+        match &self.aborted {
+            Some(c) => Err(DkgError::AlreadyAborted(c.clone())),
+            None => Ok(()),
         }
     }
 
-    /// round 1: broadcast our Feldman commitments for all coefficients
+    /// Round 1: our Feldman commitments and proofs of knowledge.
     pub fn round1_broadcast(&self) -> DkgRound1Broadcast {
-        let coefficients: Vec<DkgCommitmentMsg> = self.dealers.iter().enumerate().map(|(j, dealer)| {
-            let commitment = dealer.commitment();
-            DkgCommitmentMsg {
-                coeff_index: j as u32,
-                dealer_index: self.holder_index,
-                commitments: commitment.coefficients.iter()
-                    .map(|p| hex::encode(OsstPoint::compress(p)))
-                    .collect(),
-            }
-        }).collect();
-
-        let broadcast = DkgRound1Broadcast {
-            dealer_index: self.holder_index,
-            coefficients,
-        };
-
-        // also store our own commitments
-        // (done in receive_round1)
-
-        broadcast
-    }
-
-    /// receive round 1 commitments from a peer (or ourselves)
-    pub fn receive_round1(&mut self, msg: &DkgRound1Broadcast) -> bool {
-        for coeff_msg in &msg.coefficients {
-            let points: Vec<PallasPoint> = coeff_msg.commitments.iter()
-                .filter_map(|hex_str| {
-                    let bytes = hex::decode(hex_str).ok()?;
-                    if bytes.len() != 32 { return None; }
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(&bytes);
-                    let ct = PallasPoint::from_bytes(&arr.into());
-                    if bool::from(ct.is_some()) { Some(ct.unwrap()) } else { None }
-                })
-                .collect();
-
-            if points.len() != self.inner_t as usize {
-                tracing::warn!("DKG: wrong number of commitment points from dealer {}",
-                    coeff_msg.dealer_index);
-                continue;
-            }
-
-            let commitment = DealerCommitment {
-                dealer_index: coeff_msg.dealer_index,
-                coefficients: points,
-            };
-            self.commitments
-                .entry(coeff_msg.coeff_index)
-                .or_default()
-                .insert(coeff_msg.dealer_index, commitment);
-        }
-
-        // check if we have all commitments
-        self.all_commitments_received()
-    }
-
-    /// check if all expected round 1 commitments are in
-    fn all_commitments_received(&self) -> bool {
-        let expected = if self.round1_closed { self.actual_dealers } else { self.inner_n };
-        for j in 0..self.outer_t {
-            let count = self.commitments.get(&j).map(|m| m.len()).unwrap_or(0);
-            if count < expected as usize {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// close round 1: lock in whoever committed, proceed to round 2.
-    /// call this after a timeout if not all validators committed.
-    /// returns the number of actual dealers.
-    pub fn close_round1(&mut self) -> Result<u32, String> {
-        if self.round1_closed {
-            return Ok(self.actual_dealers);
-        }
-        // count actual dealers from coeff 0 (all coefficients should have same set)
-        let dealers = self.commitments.get(&0).map(|m| m.len() as u32).unwrap_or(0);
-        if dealers < self.inner_t {
-            return Err(format!("only {} dealers committed, need at least {} (threshold)",
-                dealers, self.inner_t));
-        }
-        self.actual_dealers = dealers;
-        self.round1_closed = true;
-        tracing::info!("DKG round1 closed: {}/{} dealers committed", dealers, self.inner_n);
-        Ok(dealers)
-    }
-
-    /// round 2: generate and send subshares to each peer
-    pub fn round2_generate(&self) -> Vec<DkgRound2Msg> {
-        let mut messages = Vec::new();
-
-        for recipient in 1..=self.inner_n {
-            let subshares: Vec<DkgSubshareMsg> = self.dealers.iter().enumerate().map(|(j, dealer)| {
-                let subshare = dealer.generate_subshare(recipient);
-                DkgSubshareMsg {
+        let mut rng = rand_core::OsRng;
+        let coefficients = self
+            .dealers
+            .iter()
+            .enumerate()
+            .map(|(j, dealer)| {
+                let package = dealer.round1_package(self.epoch, &mut rng);
+                DkgCommitmentMsg {
                     coeff_index: j as u32,
                     dealer_index: self.holder_index,
-                    recipient_index: recipient,
-                    value_hex: hex::encode(subshare.value().to_repr().as_ref()),
+                    commitments: package
+                        .commitment
+                        .coefficients
+                        .iter()
+                        .map(point_hex)
+                        .collect(),
+                    pok_r: point_hex(&package.proof_of_knowledge.r),
+                    pok_z: scalar_hex(&package.proof_of_knowledge.z),
                 }
-            }).collect();
+            })
+            .collect();
 
-            messages.push(DkgRound2Msg {
-                dealer_index: self.holder_index,
-                recipient_index: recipient,
-                subshares,
+        DkgRound1Broadcast {
+            dealer_index: self.holder_index,
+            epoch: self.epoch,
+            roster_hash: self.roster_hash_hex.clone(),
+            coefficients,
+        }
+    }
+
+    /// Accept a peer's (or our own) round-1 broadcast.
+    ///
+    /// The proof of knowledge is verified inside
+    /// [`dkg::DkgState::submit_commitment`], before the commitment is
+    /// recorded: a dealer that cannot prove knowledge of its constant term
+    /// never enters the ceremony, so a rogue-key setup has nowhere to start.
+    ///
+    /// Returns `true` once every roster member has committed for every
+    /// coefficient.
+    pub fn receive_round1(&mut self, msg: &DkgRound1Broadcast) -> Result<bool, DkgError> {
+        self.check_live()?;
+
+        if msg.epoch != self.epoch {
+            return Err(DkgError::EpochMismatch {
+                peer_index: msg.dealer_index,
+                ours: self.epoch,
+                theirs: msg.epoch,
+            });
+        }
+        if msg.roster_hash != self.roster_hash_hex {
+            return Err(DkgError::RosterMismatch(msg.dealer_index));
+        }
+        self.roster.get(msg.dealer_index)?;
+        if msg.coefficients.len() != self.outer_t as usize {
+            return Err(DkgError::MalformedRound1(
+                msg.dealer_index,
+                "wrong number of coefficients",
+            ));
+        }
+
+        for entry in &msg.coefficients {
+            if entry.dealer_index != msg.dealer_index {
+                return Err(DkgError::MalformedRound1(
+                    msg.dealer_index,
+                    "coefficient entry names a different dealer",
+                ));
+            }
+            let coeff = entry.coeff_index;
+            if coeff >= self.outer_t {
+                return Err(DkgError::MalformedRound1(
+                    msg.dealer_index,
+                    "coefficient index out of range",
+                ));
+            }
+            if entry.commitments.len() != self.inner_t as usize {
+                return Err(DkgError::MalformedRound1(
+                    msg.dealer_index,
+                    "wrong number of commitment points",
+                ));
+            }
+
+            let points = entry
+                .commitments
+                .iter()
+                .map(|h| {
+                    point_from_hex(h).ok_or(DkgError::MalformedRound1(
+                        msg.dealer_index,
+                        "non-canonical commitment point",
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let pok_r = point_from_hex(&entry.pok_r).ok_or(DkgError::MalformedRound1(
+                msg.dealer_index,
+                "non-canonical proof-of-knowledge commitment",
+            ))?;
+            let pok_z = crate::codec::scalar_from_hex(&entry.pok_z).ok_or(
+                DkgError::MalformedRound1(
+                    msg.dealer_index,
+                    "non-canonical proof-of-knowledge response",
+                ),
+            )?;
+
+            let package = dkg::Round1Package {
+                commitment: DealerCommitment {
+                    dealer_index: entry.dealer_index,
+                    coefficients: points,
+                },
+                proof_of_knowledge: dkg::ProofOfKnowledge {
+                    r: pok_r,
+                    z: pok_z,
+                },
+            };
+
+            // K-1: the proof is checked here, and a failure names the dealer.
+            match self.states[coeff as usize].submit_commitment(package) {
+                Ok(_) => {}
+                Err(OsstError::InvalidProofOfKnowledge(idx)) => {
+                    return Err(self.abort(Complaint {
+                        complainant_index: self.holder_index,
+                        dealer_index: idx,
+                        coeff_index: coeff,
+                        reason: "invalid proof of knowledge of the constant term".into(),
+                    }))
+                }
+                Err(e) => return Err(DkgError::Osst(e)),
+            }
+        }
+
+        Ok(self.round1_complete())
+    }
+
+    /// Every roster member has committed for every coefficient.
+    pub fn round1_complete(&self) -> bool {
+        self.states
+            .iter()
+            .all(|s| s.commitment_count() == self.inner_n as usize)
+    }
+
+    /// Round 2: one message per recipient, each carrying only that
+    /// recipient's sealed sub-shares.
+    ///
+    /// The message addressed to this node is included, so a node applies its
+    /// own sub-shares through exactly the code path it applies everyone
+    /// else's — including the Feldman check.
+    pub fn round2_messages(&self) -> Result<Vec<DkgRound2Msg>, DkgError> {
+        self.check_live()?;
+        if !self.round1_complete() {
+            return Err(DkgError::Round1Incomplete {
+                got: self.states.iter().map(|s| s.commitment_count()).min().unwrap_or(0),
+                need: self.inner_n as usize,
             });
         }
 
-        messages
+        // seal_round2 gives us, per coefficient, one package per recipient.
+        // Regroup by recipient: a recipient must receive its own packages and
+        // no others.
+        let mut by_recipient: BTreeMap<u32, Vec<SealedEntry>> = BTreeMap::new();
+        for (j, dealer) in self.dealers.iter().enumerate() {
+            let packages: Vec<SealedSubShare> = sealed::seal_round2::<PallasPoint>(
+                dealer,
+                &self.x25519_secret,
+                &self.sealed_roster,
+                ROUND_SUBSHARE,
+            )?;
+            for package in packages {
+                by_recipient
+                    .entry(package.recipient_index)
+                    .or_default()
+                    .push(SealedEntry {
+                        coeff_index: j as u32,
+                        ciphertext: hex::encode(&package.ciphertext),
+                    });
+            }
+        }
+
+        let mut out: Vec<DkgRound2Msg> = by_recipient
+            .into_iter()
+            .map(|(recipient_index, sealed)| DkgRound2Msg {
+                dealer_index: self.holder_index,
+                recipient_index,
+                epoch: self.epoch,
+                sealed,
+            })
+            .collect();
+        out.sort_by_key(|m| m.recipient_index);
+        Ok(out)
     }
 
-    /// receive round 2 subshares addressed to us
-    pub fn receive_round2(&mut self, msg: &DkgRound2Msg) -> Result<bool, String> {
+    /// Open a round-2 package addressed to us.
+    ///
+    /// `open_subshare` does the work: it checks that the package opens under
+    /// (our static key, the named dealer's static key, this ceremony's
+    /// prologue), that the indices inside match the envelope, that the
+    /// commitment digest inside matches the commitment we recorded in round 1,
+    /// and that the sub-share satisfies the Feldman check. Any failure names
+    /// the dealer and aborts the ceremony.
+    ///
+    /// Returns `true` once every dealer's sub-shares are in.
+    pub fn receive_round2(&mut self, msg: &DkgRound2Msg) -> Result<bool, DkgError> {
+        self.check_live()?;
+
         if msg.recipient_index != self.holder_index {
-            return Err("subshare not addressed to us".into());
+            return Err(DkgError::NotOurs {
+                addressed: msg.recipient_index,
+                ours: self.holder_index,
+            });
+        }
+        if msg.epoch != self.epoch {
+            return Err(DkgError::EpochMismatch {
+                peer_index: msg.dealer_index,
+                ours: self.epoch,
+                theirs: msg.epoch,
+            });
+        }
+        self.roster.get(msg.dealer_index)?;
+        if msg.sealed.len() != self.outer_t as usize {
+            return Err(DkgError::MalformedRound2(
+                msg.dealer_index,
+                "wrong number of sealed packages",
+            ));
         }
 
-        for sub in &msg.subshares {
-            let scalar = scalar_from_hex(&sub.value_hex)
-                .ok_or_else(|| format!("bad scalar from dealer {}", sub.dealer_index))?;
-
-            // verify against commitment
-            let commitment = self.commitments
-                .get(&sub.coeff_index)
-                .and_then(|m| m.get(&sub.dealer_index))
-                .ok_or_else(|| format!("no commitment for coeff {} dealer {}",
-                    sub.coeff_index, sub.dealer_index))?;
-
-            if !commitment.verify_subshare(self.holder_index, &scalar) {
-                return Err(format!("INVALID subshare from dealer {} for coeff {}",
-                    sub.dealer_index, sub.coeff_index));
+        for entry in &msg.sealed {
+            let coeff = entry.coeff_index;
+            if coeff >= self.outer_t {
+                return Err(DkgError::MalformedRound2(
+                    msg.dealer_index,
+                    "coefficient index out of range",
+                ));
             }
+            let ciphertext = hex::decode(&entry.ciphertext).map_err(|_| {
+                DkgError::MalformedRound2(msg.dealer_index, "ciphertext is not hex")
+            })?;
 
-            self.subshares
-                .entry(sub.coeff_index)
-                .or_default()
-                .insert(sub.dealer_index, scalar);
+            let commitment = self.states[coeff as usize]
+                .commitments
+                .get(msg.dealer_index as usize - 1)
+                .and_then(|c| c.as_ref())
+                .ok_or(DkgError::MissingCommitment {
+                    coeff_index: coeff,
+                    dealer_index: msg.dealer_index,
+                })?;
+
+            let sealed_package = SealedSubShare {
+                dealer_index: msg.dealer_index,
+                recipient_index: self.holder_index,
+                ciphertext,
+            };
+
+            match sealed::open_subshare::<PallasPoint>(
+                &self.x25519_secret,
+                self.holder_index,
+                &self.sealed_roster,
+                ROUND_SUBSHARE,
+                &sealed_package,
+                commitment,
+            ) {
+                Ok(subshare) => {
+                    self.subshares[coeff as usize]
+                        .insert(msg.dealer_index, *subshare.value());
+                }
+                Err(e) => {
+                    let reason = match e {
+                        OsstError::SealedOpenFailed(_) => {
+                            "sealed package does not open for this ceremony"
+                        }
+                        OsstError::InvalidSubShare(_) => {
+                            "sub-share fails the Feldman check against the dealer's commitment"
+                        }
+                        _ => "sealed package rejected",
+                    };
+                    return Err(self.abort(Complaint {
+                        complainant_index: self.holder_index,
+                        dealer_index: msg.dealer_index,
+                        coeff_index: coeff,
+                        reason: reason.into(),
+                    }));
+                }
+            }
         }
 
-        Ok(self.all_subshares_received())
+        Ok(self.round2_complete())
     }
 
-    fn all_subshares_received(&self) -> bool {
-        let expected = if self.actual_dealers > 0 { self.actual_dealers } else { self.inner_n };
-        for j in 0..self.outer_t {
-            let count = self.subshares.get(&j).map(|m| m.len()).unwrap_or(0);
-            if count < expected as usize {
-                return false;
-            }
-        }
-        true
+    /// Every dealer's sub-shares are in, for every coefficient.
+    pub fn round2_complete(&self) -> bool {
+        self.subshares
+            .iter()
+            .all(|m| m.len() == self.inner_n as usize)
     }
 
-    /// round 3: aggregate subshares into final InnerShare
-    pub fn finalize(&mut self) -> Result<DkgResult, String> {
-        if !self.all_subshares_received() {
-            return Err("not all subshares received".into());
-        }
+    /// Round 3: aggregate into this node's share of each outer coefficient.
+    pub fn finalize(&mut self) -> Result<DkgResult, DkgError> {
+        self.check_live()?;
 
+        let dealer_set = self.roster.indices();
         let mut coefficient_shares = Vec::with_capacity(self.outer_t as usize);
         let mut coeff_commitments = Vec::with_capacity(self.outer_t as usize);
+        let mut verification_shares = Vec::with_capacity(self.outer_t as usize);
 
         for j in 0..self.outer_t {
-            // aggregate subshares for coefficient j
-            let subs = self.subshares.get(&j).unwrap();
-            let comms = self.commitments.get(&j).unwrap();
-
-            // osst 0.2 takes the dealer set explicitly; the dealers that
-            // actually delivered for this coefficient are exactly the keys of
-            // `subs`, which is what the subset-of-validators DKG needs.
-            let dealer_set: Vec<u32> = {
-                let mut v: Vec<u32> = subs.keys().copied().collect();
-                v.sort_unstable();
-                v
-            };
-            let mut agg: dkg::Aggregator<PallasPoint> =
-                dkg::Aggregator::new(self.holder_index, &dealer_set)
-                    .map_err(|e| format!("aggregator init error: {:?}", e))?;
-            for (&dealer_idx, scalar) in subs {
-                let commitment = comms.get(&dealer_idx).unwrap();
-                let subshare = osst::reshare::SubShare::new(dealer_idx, self.holder_index, *scalar);
-                agg.add_subshare(subshare, commitment)
-                    .map_err(|e| format!("aggregation error: {:?}", e))?;
+            let subs = &self.subshares[j as usize];
+            if subs.len() != self.inner_n as usize {
+                return Err(DkgError::Round2Incomplete {
+                    coeff_index: j,
+                    got: subs.len(),
+                    need: self.inner_n as usize,
+                });
             }
 
-            let share = agg.finalize()
-                .map_err(|e| format!("finalize error: {:?}", e))?;
-            coefficient_shares.push(hex::encode(share.to_repr().as_ref()));
+            let mut agg =
+                dkg::Aggregator::<PallasPoint>::new(self.holder_index, &dealer_set)?;
+            for &dealer_index in &dealer_set {
+                let value = subs.get(&dealer_index).ok_or(DkgError::Round2Incomplete {
+                    coeff_index: j,
+                    got: subs.len(),
+                    need: self.inner_n as usize,
+                })?;
+                let commitment = self.states[j as usize]
+                    .commitments
+                    .get(dealer_index as usize - 1)
+                    .and_then(|c| c.as_ref())
+                    .ok_or(DkgError::MissingCommitment {
+                        coeff_index: j,
+                        dealer_index,
+                    })?;
+                let subshare = osst::reshare::SubShare::new(
+                    dealer_index,
+                    self.holder_index,
+                    *value,
+                )?;
+                agg.add_subshare(subshare, commitment)?;
+            }
 
-            // coefficient commitment: g^{a_j} = Σ_k g^{f_k(0)}
-            coeff_commitments.push(hex::encode(
-                agg.derive_group_key()
-                    .map_err(|e| format!("group key error: {:?}", e))?
-                    .compress(),
-            ));
+            coefficient_shares.push(scalar_hex(&agg.finalize()?));
+            coeff_commitments.push(point_hex(&agg.derive_group_key()?));
+            verification_shares.push(
+                self.states[j as usize]
+                    .derive_all_verification_shares()?
+                    .values()
+                    .map(point_hex)
+                    .collect(),
+            );
         }
 
         let result = DkgResult {
             holder_index: self.holder_index,
+            epoch: self.epoch,
+            roster_hash: self.roster_hash_hex.clone(),
             coefficient_shares,
             coeff_commitments,
+            verification_shares,
             inner_threshold: self.inner_t,
             inner_n: self.inner_n,
             outer_threshold: self.outer_t,
         };
-
         self.result = Some(result.clone());
         Ok(result)
     }
-}
 
-impl DkgResult {
-    /// evaluate the inner share at a specific outer position.
-    /// returns the signing share σ_k = Σ_j (coeff_share_j * position^j)
-    ///
-    /// this is the share used for nested FROST signing at the given position.
-    pub fn eval_at(&self, position: u32) -> Option<PallasScalar> {
-        let x = PallasScalar::from(position as u64);
-        let mut result = PallasScalar::zero();
-        let mut x_pow = PallasScalar::one();
-
-        for share_hex in &self.coefficient_shares {
-            let scalar = scalar_from_hex(share_hex)?;
-            result = result + scalar * x_pow;
-            x_pow = x_pow * x;
-        }
-
-        Some(result)
+    fn abort(&mut self, complaint: Complaint) -> DkgError {
+        tracing::error!(
+            "DKG aborted: complaint against dealer {} for coefficient {}: {}",
+            complaint.dealer_index,
+            complaint.coeff_index,
+            complaint.reason
+        );
+        self.aborted = Some(complaint.clone());
+        DkgError::Aborted(complaint)
     }
 }
 
-fn scalar_from_hex(hex_str: &str) -> Option<PallasScalar> {
-    let bytes = hex::decode(hex_str).ok()?;
-    if bytes.len() != 32 { return None; }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    let ct = PallasScalar::from_repr(arr.into());
-    if bool::from(ct.is_some()) { Some(ct.unwrap()) } else { None }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The round-2 wire type refuses the shape the vulnerable narsild used.
+    ///
+    /// This is the regression test for D-1. The old message was
+    /// `{dealer_index, recipient_index, subshares:[{coeff_index, dealer_index,
+    /// recipient_index, value_hex}]}` and was broadcast to every peer. There
+    /// is no type in this crate that can hold it any more, and
+    /// `deny_unknown_fields` means a peer still speaking it is refused at the
+    /// door rather than partially understood.
+    #[test]
+    fn a_plaintext_round2_message_does_not_deserialize() {
+        let legacy = r#"{
+            "dealer_index": 1,
+            "recipient_index": 2,
+            "subshares": [
+                {"coeff_index":0,"dealer_index":1,"recipient_index":2,
+                 "value_hex":"0101010101010101010101010101010101010101010101010101010101010101"}
+            ]
+        }"#;
+        let err = serde_json::from_str::<DkgRound2Msg>(legacy).unwrap_err();
+        assert!(
+            err.to_string().contains("subshares") || err.to_string().contains("missing field"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Even a sealed envelope carrying an extra plaintext field is refused —
+    /// there is no "sealed, but also here is the scalar" transitional shape.
+    #[test]
+    fn a_sealed_message_with_a_plaintext_field_is_refused() {
+        let smuggled = r#"{
+            "dealer_index": 1, "recipient_index": 2, "epoch": 0,
+            "sealed": [{"coeff_index":0,"ciphertext":"00","value_hex":"01"}]
+        }"#;
+        assert!(serde_json::from_str::<DkgRound2Msg>(smuggled).is_err());
+    }
+
+    #[test]
+    fn a_well_formed_sealed_message_deserializes() {
+        let good = r#"{
+            "dealer_index": 1, "recipient_index": 2, "epoch": 3,
+            "sealed": [{"coeff_index":0,"ciphertext":"aabb"}]
+        }"#;
+        let msg: DkgRound2Msg = serde_json::from_str(good).unwrap();
+        assert_eq!(msg.sealed.len(), 1);
+        assert_eq!(msg.epoch, 3);
+    }
+
+    /// The wire type has no field that could carry a scalar, so no code path
+    /// can serialize one. Belt and braces: check the serialized form of a real
+    /// ceremony's round-2 message contains no `value` key.
+    #[test]
+    fn the_serialized_round2_message_has_no_plaintext_field() {
+        let msg = DkgRound2Msg {
+            dealer_index: 1,
+            recipient_index: 2,
+            epoch: 0,
+            sealed: vec![SealedEntry {
+                coeff_index: 0,
+                ciphertext: "aabb".into(),
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("value"));
+        assert!(json.contains("ciphertext"));
+    }
 }
