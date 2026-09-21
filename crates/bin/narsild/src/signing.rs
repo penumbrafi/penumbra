@@ -198,6 +198,13 @@ pub enum SigningError {
     BadShares(Vec<u32>),
     #[error("the local signing policy does not approve this message")]
     PolicyRefused,
+    #[error(
+        "session {0} has already been signed: signing it again would publish a second \
+         response under one nonce, which discloses the share"
+    )]
+    SessionSpent(String),
+    #[error("cannot record the session as spent: {0}")]
+    SpentStore(String),
     #[error("session {0} was opened for a different message")]
     MessageChanged(String),
     #[error(
@@ -457,6 +464,8 @@ pub struct SigningService {
     pub approved: Arc<Mutex<BTreeMap<[u8; 32], Vec<u8>>>>,
     /// What this node is willing to sign.
     pub policy: Arc<dyn crate::policy::SigningPolicy>,
+    /// Session ids this node has already released a share for (M-13).
+    pub spent: Arc<dyn crate::agreement::SpentSessions>,
     /// The round-2 request per session, as first seen.
     pub requests: Arc<Mutex<BTreeMap<[u8; 32], SigningRequest>>>,
     /// `z_nested` per session, once a verified quorum has been aggregated.
@@ -472,6 +481,7 @@ impl Clone for SigningService {
             peers: self.peers.clone(),
             approved: self.approved.clone(),
             policy: self.policy.clone(),
+            spent: self.spent.clone(),
             requests: self.requests.clone(),
             results: self.results.clone(),
         }
@@ -484,6 +494,7 @@ impl SigningService {
         threshold: usize,
         peers: PeerSet,
         policy: Arc<dyn crate::policy::SigningPolicy>,
+        spent: Arc<dyn crate::agreement::SpentSessions>,
     ) -> Self {
         Self {
             round1: ThresholdAccumulator::new(threshold),
@@ -492,6 +503,7 @@ impl SigningService {
             peers,
             approved: Arc::new(Mutex::new(BTreeMap::new())),
             policy,
+            spent,
             requests: Arc::new(Mutex::new(BTreeMap::new())),
             results: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -503,6 +515,12 @@ impl SigningService {
     /// This is the gate in front of nonce sampling: a session that does not
     /// get past it produces no secret state at all.
     async fn open_session(&self, session_id: [u8; 32], message: &[u8]) -> Result<(), SigningError> {
+        // M-13: before anything else. A session id whose share has been
+        // released must never open again, whatever the message or the policy
+        // says.
+        if self.spent.is_spent(&session_id) {
+            return Err(SigningError::SessionSpent(hex::encode(session_id)));
+        }
         let mut approved = self.approved.lock().await;
         match approved.get(&session_id) {
             Some(existing) if existing == message => Ok(()),
@@ -585,6 +603,13 @@ impl SigningService {
         self.round2
             .ensure_session(session_id, |s| s.to_vec())
             .await;
+
+        // M-13: the durable record goes down before the share is produced, not
+        // after. A crash between releasing a share and recording the session
+        // is the window that makes a restart a nonce reuse.
+        self.spent
+            .mark_spent(&session_id)
+            .map_err(|e| SigningError::SpentStore(e.to_string()))?;
 
         let share = self.signer.lock().await.sign(&req)?;
         let _ = self.round2.accumulate(&session_id, share.clone()).await;

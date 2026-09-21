@@ -244,6 +244,97 @@ pub fn adjudicate<P: osst::curve::OsstPoint>(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Spent sessions (M-13)
+// ---------------------------------------------------------------------------
+
+/// File the spent session ids are appended to, inside the data directory.
+pub const SPENT_FILE: &str = "spent-sessions.log";
+
+/// Session ids this node has already released a signature share for.
+///
+/// # Why this is durable and not a `BTreeMap`
+///
+/// osst's nonce discipline is sound *within one process*: `inner_sign_v2`
+/// takes the nonces by value, so the pair is consumed and zeroized, and the
+/// published commitment is checked against them. Across a process boundary it
+/// is nothing, and osst's own doc says so — "callers that persist state across
+/// restarts MUST additionally record `(session_id, holder_index)` as spent —
+/// the type system cannot see a process boundary".
+///
+/// narsild kept nonces in an in-memory map and nothing else. A VM snapshot
+/// restore, a container restarted from an image, or any rollback of the node's
+/// state replays a nonce under a fresh challenge, and two responses under one
+/// nonce leak the share by elementary algebra. For a daemon holding long-lived
+/// escrow authority that is the failure mode most likely to actually happen:
+/// snapshots are operational routine, not an attack.
+///
+/// # The caveat this does not remove
+///
+/// Restoring the data directory from a snapshot rolls this file back too. What
+/// the file buys is that an *ordinary* restart — a crash, a redeploy, an OOM
+/// kill — is safe. A snapshot restore is not, and cannot be made so from
+/// inside the process. See the README.
+pub trait SpentSessions: Send + Sync + 'static {
+    /// Whether a share has already been released for this session.
+    fn is_spent(&self, session_id: &[u8; 32]) -> bool;
+
+    /// Record a session as spent, durably, *before* the share is produced.
+    fn mark_spent(&self, session_id: &[u8; 32]) -> std::io::Result<()>;
+}
+
+/// The shipped implementation: an append-only log, fsync'd per entry.
+pub struct FileSpentSessions {
+    path: std::path::PathBuf,
+    live: std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>>,
+}
+
+impl FileSpentSessions {
+    pub fn open(data_dir: &std::path::Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(data_dir)?;
+        let path = data_dir.join(SPENT_FILE);
+        let mut live = std::collections::BTreeSet::new();
+        if path.exists() {
+            for line in std::fs::read_to_string(&path)?.lines() {
+                if let Some(id) = hex::decode(line.trim())
+                    .ok()
+                    .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+                {
+                    live.insert(id);
+                }
+            }
+        }
+        Ok(Self {
+            path,
+            live: std::sync::Mutex::new(live),
+        })
+    }
+}
+
+impl SpentSessions for FileSpentSessions {
+    fn is_spent(&self, session_id: &[u8; 32]) -> bool {
+        self.live
+            .lock()
+            .expect("spent-session store poisoned")
+            .contains(session_id)
+    }
+
+    fn mark_spent(&self, session_id: &[u8; 32]) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let mut live = self.live.lock().expect("spent-session store poisoned");
+        // The disk write comes first: a crash between marking in memory and
+        // marking on disk is exactly the window this exists to close.
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        writeln!(f, "{}", hex::encode(session_id))?;
+        f.sync_all()?;
+        live.insert(*session_id);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +396,26 @@ mod tests {
             round1_digest(1, &[0u8; 32], &[a]),
             round1_digest(1, &[0u8; 32], &[b])
         );
+    }
+
+    /// M-13: a session id is usable once, and the record survives a restart.
+    #[test]
+    fn a_spent_session_stays_spent_across_a_restart() {
+        let dir = std::env::temp_dir().join(format!("narsild-spent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let store = FileSpentSessions::open(&dir).unwrap();
+        assert!(!store.is_spent(&[1u8; 32]));
+        store.mark_spent(&[1u8; 32]).unwrap();
+        assert!(store.is_spent(&[1u8; 32]));
+        assert!(!store.is_spent(&[2u8; 32]));
+
+        // The restart: this is the case an in-memory map loses, and it is the
+        // one that leaks a share.
+        let reopened = FileSpentSessions::open(&dir).unwrap();
+        assert!(reopened.is_spent(&[1u8; 32]));
+        assert!(!reopened.is_spent(&[2u8; 32]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

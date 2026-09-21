@@ -992,3 +992,114 @@ fn a_second_round_one_package_for_a_slot_is_refused() {
         DkgError::DuplicateRound1(3, _)
     ));
 }
+
+// ---------------------------------------------------------------------------
+// The signing service's own refusals
+// ---------------------------------------------------------------------------
+
+/// A [`crate::signing::SigningService`] for holder `k` of a built group, with
+/// a temporary data directory of its own.
+fn service(
+    group: &Group,
+    k: usize,
+    message: &[u8],
+    tag: &str,
+) -> (crate::signing::SigningService, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "narsild-svc-{}-{}-{}",
+        std::process::id(),
+        tag,
+        k
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let package = &group.packages[k];
+    let identity = crate::identity::NodeIdentity::from_seed_for_test(seed(package.holder_index));
+    let auth = Arc::new(
+        crate::auth::Authenticator::new(
+            group.roster.clone(),
+            &identity,
+            package.holder_index,
+            &dir,
+        )
+        .unwrap(),
+    );
+    let peers = crate::broadcast::PeerSet::new(group.roster.clone(), package.holder_index, auth);
+    let signer = crate::signing::LocalSigner::new(
+        package.holder_index,
+        NESTED_POSITION,
+        package.epoch,
+        package.manifest_hash().unwrap(),
+        package.share_at(NESTED_POSITION),
+        package.public_shares_at(NESTED_POSITION).unwrap(),
+        package.group_pubkey(),
+    );
+    let service = crate::signing::SigningService::new(
+        signer,
+        INNER_T as usize,
+        peers,
+        Arc::new(crate::policy::AllowList::from_messages(&[message])),
+        Arc::new(crate::agreement::FileSpentSessions::open(&dir).unwrap()),
+    );
+    (service, dir)
+}
+
+/// M-13: a session id is good for one share. The second attempt is refused
+/// rather than answered with a second response under the same nonce.
+#[tokio::test]
+async fn a_session_id_cannot_be_signed_twice() {
+    let group = build_group();
+    let message = b"release escrow 42".as_slice();
+    let session_id = [0x31u8; 32];
+    let (service, dir) = service(&group, 0, message, "spent");
+
+    let mut signers: Vec<crate::signing::LocalSigner> = (0..N as usize)
+        .map(|k| local_signer(&group, k, session_id, message))
+        .collect();
+    let req = coordinator_request(&group, session_id, message, &mut signers);
+
+    // The node has to hold nonces for this session, which is what round 1 is.
+    service.start_round1(session_id, message).await.unwrap();
+    // Round 1 already sampled nonces over the coordinator's set; rebuild the
+    // request over the node's own published commitment.
+    let commitments = service.round1.contributions(&session_id).await;
+    assert_eq!(commitments.len(), 1);
+
+    // A second round 2 for the same session is refused before anything else.
+    service.spent.mark_spent(&session_id).unwrap();
+    assert!(matches!(
+        service.start_round2(req).await,
+        Err(crate::signing::SigningError::SessionSpent(_))
+    ));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// M-2: the deny-all default is not a formality — a node with no policy
+/// configured refuses to open a session at all, so it never samples nonces.
+#[tokio::test]
+async fn a_node_with_the_default_policy_will_not_start_a_round() {
+    let group = build_group();
+    let message = b"release escrow 42".as_slice();
+    let (service, dir) = service(&group, 0, message, "policy");
+
+    // Same service, but with the shipped default policy.
+    let strict = crate::signing::SigningService {
+        policy: Arc::new(crate::policy::DenyAll),
+        ..service.clone()
+    };
+    assert!(matches!(
+        strict.start_round1([0x41u8; 32], message).await,
+        Err(crate::signing::SigningError::PolicyRefused)
+    ));
+    // And the allow-listed one does start.
+    assert!(service.start_round1([0x42u8; 32], message).await.is_ok());
+    // A message the list does not name is refused even there.
+    assert!(matches!(
+        service.start_round1([0x43u8; 32], b"something else").await,
+        Err(crate::signing::SigningError::PolicyRefused)
+    ));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

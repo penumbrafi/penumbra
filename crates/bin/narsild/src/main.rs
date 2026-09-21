@@ -1036,7 +1036,21 @@ async fn main() {
         public_shares,
         group_pubkey,
     );
-    let signing = SigningService::new(signer, cli.threshold as usize, peers.clone(), policy);
+    let spent = match agreement::FileSpentSessions::open(&cli.data_dir) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            eprintln!("cannot open the spent-session store: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let signing = SigningService::new(
+        signer,
+        cli.threshold as usize,
+        peers.clone(),
+        policy,
+        spent,
+    );
 
     let state = AppState {
         signing,
