@@ -38,16 +38,6 @@ pub fn scalar_from_hex(s: &str) -> Option<PallasScalar> {
     PallasScalar::from_canonical_bytes(&arr)
 }
 
-/// Parse a canonical scalar of the curve `P` works over, from hex.
-///
-/// Generic so that [`crate::agreement`] can verify evidence without naming
-/// Pallas — the module is meant to move upstream.
-pub fn scalar_from_hex_of<P: OsstPoint>(s: &str) -> Option<P::Scalar> {
-    let bytes = hex::decode(s).ok()?;
-    let arr: [u8; 32] = bytes.as_slice().try_into().ok()?;
-    P::Scalar::from_canonical_bytes(&arr)
-}
-
 /// Serde for a `[u8; 32]` as a hex string, so a session id or a digest reads
 /// the same on the wire as everything else here.
 pub mod bytes32 {

@@ -22,13 +22,15 @@
 
 use serde::Serialize;
 
-/// `/sign/round1`: this node's nonce commitments for a session. `hiding` and
-/// `binding` are `D_k` and `E_k` — commitments, not the nonces themselves.
+/// `/sign/round1`: this node's round-0 precommitment for a session.
+///
+/// A hash of commitments that are themselves hashes of nonces — two removes
+/// from anything secret, and the commitments are not published until the
+/// precommit round closes.
 #[derive(Debug, Serialize)]
 pub struct Round1Response {
     pub holder_index: u32,
-    pub hiding: String,
-    pub binding: String,
+    pub precommit: String,
     pub collected: usize,
     pub threshold: usize,
 }
@@ -99,8 +101,11 @@ pub struct NestedCommitment {
 pub struct SigningStatusResponse {
     pub session_id: String,
     pub nested_index: u32,
+    pub round0: RoundStatus,
     pub round1: RoundStatus,
     pub round2: RoundStatus,
+    /// The published round-0 precommitments.
+    pub precommits: Vec<crate::signing::InnerPrecommit>,
     /// The published round-1 commitment set — `(D_k, E_k)` per holder.
     pub commitments: Vec<crate::signing::InnerCommitment>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -248,6 +253,9 @@ pub const ALL_RESPONSE_FIELDS: &[&str] = &[
     "needed",
     "message_hex",
     "nested_commitment",
+    "precommit",
+    "precommits",
+    "round0",
     "nested_index",
     "nested_position",
     "outer_threshold",
@@ -306,8 +314,7 @@ mod tests {
         vec![
             serde_json::to_value(Round1Response {
                 holder_index: 1,
-                hiding: "aa".into(),
-                binding: "bb".into(),
+                precommit: hex::encode([2u8; 32]),
                 collected: 1,
                 threshold: 2,
             })
@@ -318,6 +325,13 @@ mod tests {
             serde_json::to_value(SigningStatusResponse {
                 session_id: hex::encode([1u8; 32]),
                 nested_index: 1,
+                precommits: vec![crate::signing::InnerPrecommit {
+                    session_id: [1u8; 32],
+                    message_hex: hex::encode(b"m"),
+                    holder_index: 1,
+                    precommit: hex::encode([2u8; 32]),
+                }],
+                round0: RoundStatus { collected: 1, threshold: 2, ready: false },
                 round1: RoundStatus { collected: 1, threshold: 2, ready: false },
                 round2: RoundStatus { collected: 0, threshold: 2, ready: false },
                 commitments: vec![commitment],

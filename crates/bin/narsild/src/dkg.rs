@@ -217,31 +217,126 @@ pub struct DkgRound2Msg {
     pub sealed: Vec<SealedEntry>,
 }
 
-/// A recipient's accusation against a dealer (M-6).
-///
-/// Bound to the ceremony it belongs to — roster, session, epoch, round — so a
-/// complaint captured from one attempt cannot be replayed into another, and
-/// carried in a signed envelope so it is bound to its accuser. It names the
-/// dealer's round-1 commitment it is about, and carries evidence every other
-/// node adjudicates for itself (`agreement::adjudicate`).
+/// Domain tag for this node's combined round-1 echo digest.
+pub const ECHO_DOMAIN: &[u8] = b"narsild/dkg/round1-echo/v1";
+
+/// One member's echo of the round-1 digest. Public; broadcast; signed by the
+/// sender's roster identity like every other request.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct Complaint {
-    pub complainant_index: u32,
-    pub dealer_index: u32,
-    pub coeff_index: u32,
+pub struct DkgEcho {
+    pub sender_index: u32,
     pub epoch: u64,
     #[serde(with = "crate::codec::bytes32")]
     pub session_id: [u8; 32],
-    /// The sender's roster fingerprint, hex.
-    pub roster_hash: String,
-    /// Which round the accusation is about: 1 for a proof of knowledge or a
-    /// round-1 disagreement, 2 for a sealed package.
+    /// One [`osst::dkg::EchoDigest`] per outer coefficient, hex, in
+    /// coefficient order.
+    ///
+    /// Per coefficient, not one combined hash: each coefficient is its own
+    /// Feldman ceremony with its own `DkgState`, and osst's comparison —
+    /// `AgreedRound1::confirm_all` — is defined over one agreed set. Sending
+    /// the digests separately is what lets that function be the comparison,
+    /// rather than something this crate re-implements beside it.
+    pub digests: Vec<String>,
+}
+
+/// The wire form of [`osst::dkg::Complaint`] (M-6).
+///
+/// osst 0.5.0 owns the complaint: the value, the `(epoch, session_id, round)`
+/// binding, the Schnorr signature under the accuser's roster identity key, and
+/// the adjudication. It does not own the wire, because it does not own the
+/// roster or the transport — so this is the encoding, and nothing more. Every
+/// field is decoded back into the osst type before anything looks at it.
+///
+/// # Only one kind of evidence, and why
+///
+/// `ComplaintEvidence::ForgedProofOfKnowledge` is fully transferable: the
+/// round-1 package is public, so any third party re-runs `Round1Package::verify`
+/// and reaches the same verdict with no trust in the accuser.
+///
+/// `ComplaintEvidence::BadSubShare` is not encoded here, because narsild
+/// cannot construct it: `open_subshare` discards the plaintext when the
+/// Feldman check fails, and there is no lower-level open. A round-2 failure
+/// therefore aborts this node and is logged, rather than producing an
+/// accusation nobody can check. Raising it properly needs an osst entry point
+/// that hands the recipient the plaintext it just rejected.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ComplaintMsg {
+    pub epoch: u64,
+    #[serde(with = "crate::codec::bytes32")]
+    pub session_id: [u8; 32],
     pub round: u8,
-    /// Digest of the dealer's round-1 commitment this complaint is about, hex.
-    pub commitment_digest: String,
-    pub reason: crate::agreement::ComplaintReason,
-    pub evidence: crate::agreement::ComplaintEvidence,
+    pub accuser_index: u32,
+    pub accused_index: u32,
+    /// The accused dealer's round-1 commitment, hex.
+    pub commitment: String,
+    /// The proof of knowledge that does not verify, hex.
+    pub pok_r: String,
+    pub pok_z: String,
+    /// Schnorr signature by the accuser's ceremony identity key.
+    pub sig_r: String,
+    pub sig_s: String,
+}
+
+impl ComplaintMsg {
+    /// Encode an osst complaint for the wire.
+    pub fn encode(c: &dkg::Complaint<PallasPoint>) -> Result<Self, DkgError> {
+        let dkg::ComplaintEvidence::ForgedProofOfKnowledge { package } = &c.evidence else {
+            return Err(DkgError::UnsupportedEvidence);
+        };
+        Ok(Self {
+            epoch: c.epoch,
+            session_id: c.session_id,
+            round: c.round,
+            accuser_index: c.accuser_index,
+            accused_index: c.accused_index,
+            commitment: hex::encode(package.commitment.to_bytes()),
+            pok_r: point_hex(&package.proof_of_knowledge.r),
+            pok_z: scalar_hex(&package.proof_of_knowledge.z),
+            sig_r: point_hex(&c.r),
+            sig_s: scalar_hex(&c.s),
+        })
+    }
+
+    /// Decode into the osst type. `threshold` is the inner threshold, which is
+    /// how many points a dealer commitment has.
+    pub fn decode(&self, threshold: u32) -> Result<dkg::Complaint<PallasPoint>, DkgError> {
+        let bad = |what| DkgError::MalformedComplaint(self.accuser_index, what);
+        let commitment = DealerCommitment::<PallasPoint>::from_bytes(
+            &hex::decode(&self.commitment).map_err(|_| bad("commitment is not hex"))?,
+            threshold,
+        )?;
+        let package = dkg::Round1Package {
+            commitment,
+            proof_of_knowledge: dkg::ProofOfKnowledge {
+                r: point_from_hex(&self.pok_r).ok_or(bad("proof commitment"))?,
+                z: crate::codec::scalar_from_hex(&self.pok_z).ok_or(bad("proof response"))?,
+            },
+        };
+        Ok(dkg::Complaint {
+            epoch: self.epoch,
+            session_id: self.session_id,
+            round: self.round,
+            accuser_index: self.accuser_index,
+            accused_index: self.accused_index,
+            evidence: dkg::ComplaintEvidence::ForgedProofOfKnowledge { package },
+            r: point_from_hex(&self.sig_r).ok_or(bad("signature commitment"))?,
+            s: crate::codec::scalar_from_hex(&self.sig_s).ok_or(bad("signature scalar"))?,
+        })
+    }
+}
+
+/// Why a ceremony stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AbortReason {
+    /// An upheld complaint against a dealer.
+    Dealer(u32),
+    /// The members do not agree on what round 1 was; these echoed differently.
+    EchoMismatch(Vec<u32>),
+    /// A sealed package this node was sent does not open or does not check.
+    /// Not transferable — see [`ComplaintMsg`].
+    SealedPackage(u32),
 }
 
 /// The ceremony's output for one node.
@@ -362,12 +457,16 @@ pub enum DkgError {
     MalformedRound2(u32, &'static str),
     #[error("round-2 package addressed to {addressed}, we are {ours}")]
     NotOurs { addressed: u32, ours: u32 },
-    #[error("no round-1 commitment for coefficient {coeff_index} from dealer {dealer_index}")]
-    MissingCommitment { coeff_index: u32, dealer_index: u32 },
-    #[error("DKG aborted by complaint against dealer {}: {:?}", .0.dealer_index, .0.reason)]
-    Aborted(Box<Complaint>),
-    #[error("DKG already aborted by complaint against dealer {}", .0.dealer_index)]
-    AlreadyAborted(Box<Complaint>),
+    #[error("DKG aborted: {0:?}")]
+    Aborted(AbortReason),
+    #[error("DKG already aborted: {0:?}")]
+    AlreadyAborted(AbortReason),
+    #[error("malformed complaint from member {0}: {1}")]
+    MalformedComplaint(u32, &'static str),
+    #[error("complaint from member {0} does not verify for this ceremony")]
+    InvalidComplaint(u32),
+    #[error("this complaint carries evidence narsild cannot encode")]
+    UnsupportedEvidence,
     #[error("round 1 is not complete: {got}/{need} dealers have committed")]
     Round1Incomplete { got: usize, need: usize },
     #[error("round 2 is not complete for coefficient {coeff_index}: {got}/{need}")]
@@ -413,27 +512,40 @@ pub struct DkgCeremony {
     states: Vec<dkg::DkgState<PallasPoint>>,
     /// Opened sub-shares: `subshares[coeff][dealer] = f_dealer(us)`.
     subshares: Vec<BTreeMap<u32, PallasScalar>>,
-    /// The round-1 broadcasts as accepted, by dealer — what the echo digest is
-    /// computed over, and the evidence a complaint is checked against.
+    /// The round-1 broadcasts as accepted, by dealer — the evidence a
+    /// `ForgedProofOfKnowledge` complaint carries.
     round1_msgs: BTreeMap<u32, DkgRound1Broadcast>,
-    /// Every member's echo of the round-1 digest (M-5).
-    echoes: crate::agreement::EchoSet,
+    /// The agreed round-1 set for each coefficient, once round 1 has closed
+    /// and every member has echoed the same digest (M-5).
+    ///
+    /// osst 0.5.0 owns this: `DkgState::agreed_round1` produces the set and
+    /// its digest, `AgreedRound1::confirm_all` is the comparison, and the
+    /// round-2 entry points — `open_subshare_agreed`, `Aggregator::from_agreed`
+    /// — take the agreed set rather than a commitment that arrived alongside
+    /// a sub-share. Holding one is not proof of agreement; `confirmed` is.
+    agreed: Vec<Option<dkg::AgreedRound1<PallasPoint>>>,
+    /// Every member's echoed digests, by index — one per coefficient.
+    echoes: BTreeMap<u32, Vec<dkg::EchoDigest>>,
+    /// Whether `confirm_all` has passed.
+    confirmed: bool,
     /// This node's round-1 broadcast, sampled once.
     ///
     /// `Dealer::round1_package` draws a fresh proof-of-knowledge nonce on
     /// every call, so calling it twice would make an honest node look like an
     /// equivocating dealer to the echo round.
     our_broadcast: DkgRound1Broadcast,
-    /// The complaint that aborted the ceremony, if any.
-    aborted: Option<Complaint>,
-    /// Accusers whose complaints contradicted the evidence they carried.
+    /// Why the ceremony stopped, if it has.
+    aborted: Option<AbortReason>,
+    /// This node's identity secret on the ceremony curve, which signs its
+    /// complaints.
+    identity_secret: PallasScalar,
+    /// A complaint this node raised and has not yet handed to the caller.
+    pending_complaint: Option<ComplaintMsg>,
+    /// Accusers whose complaints were authentic but unfounded.
     flagged: BTreeSet<u32>,
-    /// Complaints nobody but the accuser can check, by dealer: a single one is
-    /// not acted on, `inner_t` independent ones are.
-    unverifiable: BTreeMap<u32, BTreeSet<u32>>,
-    /// `(complainant, dealer, coeff)` of complaints already seen, so a
-    /// re-broadcast does not loop.
-    seen_complaints: BTreeSet<(u32, u32, u32)>,
+    /// `(accuser, accused)` of complaints already seen, so a re-broadcast does
+    /// not loop.
+    seen_complaints: BTreeSet<(u32, u32)>,
     pub result: Option<DkgResult>,
 }
 
@@ -446,10 +558,12 @@ impl DkgCeremony {
     /// ceremony rather than being dropped from it, because the roster is
     /// configuration and disagreement about who is in the group is exactly
     /// what the roster hash exists to detect.
+    #[allow(clippy::too_many_arguments)] // a ceremony has this many parameters
     pub fn new(
         holder_index: u32,
         roster: Arc<Roster>,
         x25519_secret: [u8; 32],
+        identity_secret: PallasScalar,
         epoch: u64,
         ceremony_nonce: [u8; 32],
         inner_t: u32,
@@ -491,7 +605,9 @@ impl DkgCeremony {
             states,
             subshares: (0..outer_t).map(|_| BTreeMap::new()).collect(),
             round1_msgs: BTreeMap::new(),
-            echoes: crate::agreement::EchoSet::default(),
+            agreed: (0..outer_t).map(|_| None).collect(),
+            echoes: BTreeMap::new(),
+            confirmed: false,
             our_broadcast: DkgRound1Broadcast {
                 dealer_index: holder_index,
                 epoch,
@@ -500,8 +616,9 @@ impl DkgCeremony {
                 coefficients: Vec::new(),
             },
             aborted: None,
+            identity_secret,
+            pending_complaint: None,
             flagged: BTreeSet::new(),
-            unverifiable: BTreeMap::new(),
             seen_complaints: BTreeSet::new(),
             result: None,
         };
@@ -509,14 +626,14 @@ impl DkgCeremony {
         Ok(ceremony)
     }
 
-    /// The complaint that aborted this ceremony, if any.
-    pub fn abort_reason(&self) -> Option<&Complaint> {
+    /// Why this ceremony stopped, if it has.
+    pub fn abort_reason(&self) -> Option<&AbortReason> {
         self.aborted.as_ref()
     }
 
     fn check_live(&self) -> Result<(), DkgError> {
         match &self.aborted {
-            Some(c) => Err(DkgError::AlreadyAborted(Box::new(c.clone()))),
+            Some(c) => Err(DkgError::AlreadyAborted(c.clone())),
             None => Ok(()),
         }
     }
@@ -661,21 +778,33 @@ impl DkgCeremony {
             };
 
             // K-1: the proof is checked here, and a failure names the dealer.
+            // The complaint that follows is transferable — the round-1 package
+            // is public, so every other node re-runs `Round1Package::verify`
+            // and reaches this verdict without trusting this node at all.
+            let evidence = dkg::ComplaintEvidence::ForgedProofOfKnowledge {
+                package: dkg::Round1Package {
+                    commitment: package.commitment.clone(),
+                    proof_of_knowledge: dkg::ProofOfKnowledge {
+                        r: package.proof_of_knowledge.r,
+                        z: package.proof_of_knowledge.z,
+                    },
+                },
+            };
             match self.states[coeff as usize].submit_commitment(package) {
                 Ok(_) => {}
                 Err(OsstError::InvalidProofOfKnowledge(idx)) => {
-                    // Publicly verifiable by construction: the package is a
-                    // broadcast, so everyone re-checks the proof themselves.
-                    let complaint = self.complaint(
-                        idx,
-                        coeff,
+                    let mut rng = rand_core::OsRng;
+                    let complaint = dkg::Complaint::<PallasPoint>::sign(
+                        self.epoch,
+                        self.session_id,
                         1,
-                        crate::agreement::ComplaintReason::InvalidProofOfKnowledge,
-                        crate::agreement::ComplaintEvidence::SealedRejected {
-                            ciphertext_digest: String::new(),
-                        },
-                    );
-                    return Err(self.abort(complaint));
+                        self.holder_index,
+                        evidence,
+                        &self.identity_secret,
+                        &mut rng,
+                    )?;
+                    self.pending_complaint = ComplaintMsg::encode(&complaint).ok();
+                    return Err(self.abort(AbortReason::Dealer(idx)));
                 }
                 Err(e) => return Err(DkgError::Osst(e)),
             }
@@ -685,61 +814,63 @@ impl DkgCeremony {
         Ok(self.round1_complete())
     }
 
-    /// The canonical digest of the round-1 set this node accepted (M-5).
+    /// The agreed round-1 sets, one per coefficient, and this node's echo
+    /// digest over them (M-5).
     ///
-    /// `None` until round 1 is complete: a digest over a partial set says
-    /// nothing, and echoing one would make honest nodes disagree.
-    pub fn round1_digest(&self) -> Option<[u8; 32]> {
-        if !self.round1_complete() {
-            return None;
-        }
-        let entries: Vec<crate::agreement::Round1Entry<'_>> = self
-            .round1_msgs
-            .values()
-            .map(|msg| crate::agreement::Round1Entry {
-                dealer_index: msg.dealer_index,
-                coefficients: msg
-                    .coefficients
-                    .iter()
-                    .map(|c| {
-                        (
-                            c.coeff_index,
-                            c.commitments
-                                .iter()
-                                .map(|h| hex::decode(h).unwrap_or_default())
-                                .collect(),
-                            hex::decode(&c.pok_r).unwrap_or_default(),
-                            hex::decode(&c.pok_z).unwrap_or_default(),
-                        )
-                    })
-                    .collect(),
-                _marker: std::marker::PhantomData,
-            })
-            .collect();
-        Some(crate::agreement::round1_digest(
-            self.epoch,
-            &self.session_id,
-            &entries,
-        ))
+    /// `None` until round 1 is complete for every coefficient: echoing a
+    /// partial set agrees on nothing, because a member that has not yet
+    /// received dealer `i`'s commitment would echo a different digest for an
+    /// entirely honest reason.
+    fn agreed_sets(&self) -> Option<Vec<dkg::AgreedRound1<PallasPoint>>> {
+        self.states
+            .iter()
+            .map(|s| s.agreed_round1().ok())
+            .collect()
     }
 
-    /// This node's echo of the round-1 digest, to broadcast.
-    pub fn echo(&self) -> Option<crate::agreement::DkgEcho> {
-        Some(crate::agreement::DkgEcho {
+    /// A single digest over every coefficient's agreed set, for the status
+    /// page. Not what is compared — see [`DkgEcho`] — just a short way to say
+    /// "this node's view of round 1" in a log line.
+    pub fn round1_digest(&self) -> Option<[u8; 32]> {
+        let sets = self.agreed_sets()?;
+        let mut h = Sha256::new();
+        h.update(ECHO_DOMAIN);
+        h.update(self.epoch.to_le_bytes());
+        h.update(self.session_id);
+        h.update((sets.len() as u64).to_le_bytes());
+        for set in &sets {
+            h.update(set.digest().as_bytes());
+        }
+        Some(h.finalize().into())
+    }
+
+    /// This node's echo of the round-1 digests, to broadcast.
+    pub fn echo(&self) -> Option<DkgEcho> {
+        let sets = self.agreed_sets()?;
+        Some(DkgEcho {
             sender_index: self.holder_index,
             epoch: self.epoch,
             session_id: self.session_id,
-            digest: self.round1_digest()?,
+            digests: sets
+                .iter()
+                .map(|s| hex::encode(s.digest().as_bytes()))
+                .collect(),
         })
     }
 
     /// Accept a member's echo (M-5).
     ///
-    /// Returns `true` once every roster member has echoed the same digest this
-    /// node computed. A disagreement aborts: at least one dealer sent
-    /// different commitments to different recipients, and there is no key the
-    /// whole group could agree on afterwards.
-    pub fn receive_echo(&mut self, echo: &crate::agreement::DkgEcho) -> Result<bool, DkgError> {
+    /// Returns `true` once every roster member has echoed the digests this
+    /// node computed, at which point the agreed sets are recorded and round 2
+    /// may start. The comparison is osst's: `AgreedRound1::confirm` per member
+    /// so that a mismatch can name them, and `confirm_all` over the full set
+    /// before anything is recorded, which is also what enforces "enough
+    /// echoes".
+    ///
+    /// A disagreement aborts. A dealer equivocated, or the broadcast is not
+    /// reliable; osst is right that the two cannot be told apart from inside,
+    /// and the remedy is the same either way.
+    pub fn receive_echo(&mut self, echo: &DkgEcho) -> Result<bool, DkgError> {
         self.check_live()?;
         if echo.epoch != self.epoch {
             return Err(DkgError::EpochMismatch {
@@ -752,43 +883,84 @@ impl DkgCeremony {
             return Err(DkgError::CeremonyMismatch(echo.sender_index));
         }
         self.roster.get(echo.sender_index)?;
+        if echo.digests.len() != self.outer_t as usize {
+            return Err(DkgError::MalformedRound1(
+                echo.sender_index,
+                "echo does not cover every coefficient",
+            ));
+        }
+        let digests: Vec<dkg::EchoDigest> = echo
+            .digests
+            .iter()
+            .map(|h| {
+                hex::decode(h)
+                    .ok()
+                    .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+                    .map(dkg::EchoDigest)
+                    .ok_or(DkgError::MalformedRound1(
+                        echo.sender_index,
+                        "echo digest is not 32 bytes of hex",
+                    ))
+            })
+            .collect::<Result<_, _>>()?;
 
-        let ours = self
-            .round1_digest()
-            .ok_or(DkgError::Round1Incomplete {
-                got: self.round1_msgs.len(),
-                need: self.inner_n as usize,
-            })?;
-        self.echoes.insert(echo.sender_index, echo.digest);
+        // Our own view has to exist before anyone else's can be compared
+        // against it: echoing a partial set agrees on nothing.
+        let sets = self.agreed_sets().ok_or(DkgError::Round1Incomplete {
+            got: self.round1_msgs.len(),
+            need: self.inner_n as usize,
+        })?;
 
-        match self.echoes.verdict(&ours, self.inner_n as usize) {
-            crate::agreement::EchoVerdict::Agreed => Ok(true),
-            crate::agreement::EchoVerdict::Pending { .. } => Ok(false),
-            crate::agreement::EchoVerdict::Disagree { differing } => {
-                let complaint = self.complaint(
-                    *differing.first().unwrap_or(&0),
-                    0,
-                    1,
-                    crate::agreement::ComplaintReason::Round1Disagreement,
-                    crate::agreement::ComplaintEvidence::SealedRejected {
-                        ciphertext_digest: String::new(),
-                    },
-                );
-                self.aborted = Some(complaint);
-                Err(DkgError::EchoMismatch { differing })
+        self.echoes.entry(echo.sender_index).or_insert(digests);
+
+        // Name the members that differ, using osst's comparison per set.
+        let differing: Vec<u32> = self
+            .echoes
+            .iter()
+            .filter(|(_, theirs)| {
+                sets.iter()
+                    .zip(theirs.iter())
+                    .any(|(set, d)| set.confirm(d).is_err())
+            })
+            .map(|(i, _)| *i)
+            .collect();
+        if !differing.is_empty() {
+            self.aborted = Some(AbortReason::EchoMismatch(differing.clone()));
+            return Err(DkgError::EchoMismatch { differing });
+        }
+
+        // And the agreement itself, per coefficient, over every member's echo.
+        // `confirm_all` is where "enough echoes" is decided, so a short set is
+        // `InsufficientContributions` from osst rather than a count this crate
+        // keeps beside it.
+        let n = self.inner_n as usize;
+        for (j, set) in sets.iter().enumerate() {
+            let peers: Vec<dkg::EchoDigest> =
+                self.echoes.values().filter_map(|d| d.get(j).copied()).collect();
+            match set.confirm_all(&peers, n) {
+                Ok(()) => {}
+                Err(OsstError::InsufficientContributions { .. }) => {
+                    return Ok(false);
+                }
+                Err(_) => {
+                    let differing = vec![echo.sender_index];
+                    self.aborted = Some(AbortReason::EchoMismatch(differing.clone()));
+                    return Err(DkgError::EchoMismatch { differing });
+                }
             }
         }
+
+        // Every member agrees. From here on, "which commitment is dealer i's"
+        // is answered from these sets and not from whatever arrives with a
+        // sub-share.
+        self.agreed = sets.into_iter().map(Some).collect();
+        self.confirmed = true;
+        Ok(true)
     }
 
     /// Every member has echoed our digest.
     pub fn round1_agreed(&self) -> bool {
-        match self.round1_digest() {
-            Some(ours) => {
-                self.echoes.verdict(&ours, self.inner_n as usize)
-                    == crate::agreement::EchoVerdict::Agreed
-            }
-            None => false,
-        }
+        self.confirmed
     }
 
     /// Every roster member has committed for every coefficient.
@@ -871,6 +1043,16 @@ impl DkgCeremony {
     pub fn receive_round2(&mut self, msg: &DkgRound2Msg) -> Result<bool, DkgError> {
         self.check_live()?;
 
+        // Nothing is opened before the group agrees what round 1 was, for the
+        // same reason nothing is sent: the commitment a sub-share is checked
+        // against has to be the one every member saw.
+        if !self.confirmed {
+            return Err(DkgError::EchoIncomplete {
+                collected: self.echoes.len(),
+                needed: self.inner_n as usize,
+            });
+        }
+
         if msg.recipient_index != self.holder_index {
             return Err(DkgError::NotOurs {
                 addressed: msg.recipient_index,
@@ -904,13 +1086,17 @@ impl DkgCeremony {
                 DkgError::MalformedRound2(msg.dealer_index, "ciphertext is not hex")
             })?;
 
-            let commitment = self.states[coeff as usize]
-                .commitments
-                .get(msg.dealer_index as usize - 1)
-                .and_then(|c| c.as_ref())
-                .ok_or(DkgError::MissingCommitment {
-                    coeff_index: coeff,
-                    dealer_index: msg.dealer_index,
+            // M-5: the commitment comes from the *agreed* round-1 set, not
+            // from anything that arrived with the sub-share. That is the
+            // difference `open_subshare_agreed` exists to make: a dealer that
+            // sent Alice C_A and Bob C_B cannot have both in the agreed set,
+            // and the echo round refused to start round 2 at all when they
+            // disagreed.
+            let agreed = self.agreed[coeff as usize]
+                .as_ref()
+                .ok_or(DkgError::EchoIncomplete {
+                    collected: self.echoes.len(),
+                    needed: self.inner_n as usize,
                 })?;
 
             let sealed_package = SealedSubShare {
@@ -919,52 +1105,34 @@ impl DkgCeremony {
                 ciphertext,
             };
 
-            match sealed::open_subshare::<PallasPoint>(
+            match sealed::open_subshare_agreed::<PallasPoint>(
                 &self.x25519_secret,
                 self.holder_index,
                 &self.sealed_roster,
                 ROUND_SUBSHARE,
                 &sealed_package,
-                commitment,
+                agreed,
             ) {
                 Ok(subshare) => {
                     self.subshares[coeff as usize]
                         .insert(msg.dealer_index, *subshare.value());
                 }
                 Err(e) => {
-                    // The distinction osst keeps between these two matters —
-                    // one says the package was not for us, the other that the
-                    // dealer's own arithmetic is wrong — and it is what drives
-                    // the complaint round.
-                    let reason = match e {
-                        OsstError::InvalidSubShare(_) => {
-                            crate::agreement::ComplaintReason::InvalidSubShare
-                        }
-                        _ => crate::agreement::ComplaintReason::SealedOpenFailed,
-                    };
-                    // osst 0.4.0's `open_subshare` discards the plaintext on a
-                    // failed check, so this node cannot publish the sub-share
-                    // that would make the complaint publicly verifiable. It
-                    // pins the accusation to the exact ciphertext instead, and
-                    // peers treat it as unverifiable: `inner_t` independent
-                    // accusers against one dealer, not one packet. osst 0.5.0
-                    // is expected to return the plaintext, at which point this
-                    // becomes `ComplaintEvidence::SubShare` and the
-                    // adjudication path in `agreement` — already written and
-                    // tested — does the rest.
-                    let mut h = Sha256::new();
-                    h.update(b"narsild/dkg/ciphertext/v1");
-                    h.update(&sealed_package.ciphertext);
-                    let complaint = self.complaint(
+                    // No complaint is raised here. osst's `BadSubShare`
+                    // evidence needs the plaintext sub-share, and
+                    // `open_subshare` discards it when the Feldman check
+                    // fails, so the only accusation this node could make is
+                    // one nobody else can check — the denial-of-service
+                    // channel M-6 is about. The distinction osst keeps between
+                    // "did not open" and "does not check" goes to the log,
+                    // where the operator can use it.
+                    tracing::error!(
+                        "round-2 package from dealer {} for coefficient {}: {}",
                         msg.dealer_index,
                         coeff,
-                        2,
-                        reason,
-                        crate::agreement::ComplaintEvidence::SealedRejected {
-                            ciphertext_digest: hex::encode(h.finalize()),
-                        },
+                        e
                     );
-                    return Err(self.abort(complaint));
+                    return Err(self.abort(AbortReason::SealedPackage(msg.dealer_index)));
                 }
             }
         }
@@ -998,22 +1166,22 @@ impl DkgCeremony {
                 });
             }
 
-            let mut agg =
-                dkg::Aggregator::<PallasPoint>::new(self.holder_index, &dealer_set)?;
+            let agreed = self.agreed[j as usize]
+                .as_ref()
+                .ok_or(DkgError::EchoIncomplete {
+                    collected: self.echoes.len(),
+                    needed: self.inner_n as usize,
+                })?;
+            // The dealer set comes from the agreed round-1 set, so every node
+            // aggregates over the same dealers.
+            let mut agg = dkg::Aggregator::<PallasPoint>::from_agreed(self.holder_index, agreed)?;
             for &dealer_index in &dealer_set {
                 let value = subs.get(&dealer_index).ok_or(DkgError::Round2Incomplete {
                     coeff_index: j,
                     got: subs.len(),
                     need: self.inner_n as usize,
                 })?;
-                let commitment = self.states[j as usize]
-                    .commitments
-                    .get(dealer_index as usize - 1)
-                    .and_then(|c| c.as_ref())
-                    .ok_or(DkgError::MissingCommitment {
-                        coeff_index: j,
-                        dealer_index,
-                    })?;
+                let commitment = agreed.commitment(dealer_index)?;
                 let subshare = osst::reshare::SubShare::new(
                     dealer_index,
                     self.holder_index,
@@ -1052,183 +1220,83 @@ impl DkgCeremony {
     /// Accept a complaint raised by another participant, and adjudicate it
     /// (M-6).
     ///
-    /// The old behaviour was to believe any complaint from anyone: it named a
-    /// dealer, and the ceremony stopped. One unauthenticated packet was a
-    /// denial of service, and because the handler did not re-broadcast, a
-    /// complaint delivered to one node stopped that node while the rest
-    /// finalized — which is the split-group outcome the broadcast exists to
-    /// prevent.
+    /// osst 0.5.0 does the hard half. [`osst::dkg::Complaint::verify`] checks
+    /// that the complaint belongs to this ceremony, that its accused index
+    /// agrees with its evidence, that the Schnorr signature verifies under the
+    /// accuser's identity key — which must come from the roster, never from
+    /// the complaint — and then whether the evidence shows what it claims.
     ///
-    /// Now every node reaches its own verdict from data it holds:
+    /// What is left to the caller is agreement, and it is exactly the list
+    /// osst's own documentation says a library cannot provide:
     ///
-    /// - the complaint must belong to *this* ceremony (roster, epoch, session)
-    ///   and name members of this roster;
-    /// - its evidence is checked against the dealer's round-1 commitment as
-    ///   this node recorded it;
-    /// - a complaint whose evidence contradicts it is ignored and its accuser
-    ///   flagged;
-    /// - a complaint nobody but the accuser can check does not act alone:
-    ///   `inner_t` independent accusers against one dealer are required.
+    /// 1. re-broadcast on receipt, so a complaint delivered to one node does
+    ///    not stop that node while the rest finalize;
+    /// 2. verify before acting, and drop anything that does not check;
+    /// 3. count an `Unfounded` verdict against the *accuser*;
+    /// 4. apply the same upheld complaints on every node before deriving a key
+    ///    — `disqualify` is a local mutation, and it is sound here only
+    ///    because every node reaches the verdict from the same public evidence.
     ///
-    /// Returns whether the caller should re-broadcast it — true the first time
-    /// a well-formed complaint is seen, so it reaches the whole group without
-    /// looping.
-    pub fn receive_complaint(&mut self, complaint: &Complaint) -> Result<bool, DkgError> {
-        if complaint.epoch != self.epoch {
-            return Err(DkgError::EpochMismatch {
-                peer_index: complaint.complainant_index,
-                ours: self.epoch,
-                theirs: complaint.epoch,
-            });
-        }
-        if complaint.session_id != self.session_id {
-            return Err(DkgError::CeremonyMismatch(complaint.complainant_index));
-        }
-        if complaint.roster_hash != self.roster_hash_hex {
-            return Err(DkgError::RosterMismatch(complaint.complainant_index));
-        }
-        self.roster.get(complaint.complainant_index)?;
-        self.roster.get(complaint.dealer_index)?;
-        if complaint.coeff_index >= self.outer_t {
-            return Err(DkgError::MalformedRound1(
-                complaint.complainant_index,
-                "coefficient index out of range",
-            ));
-        }
+    /// Returns whether the caller should re-broadcast — true the first time a
+    /// verified complaint is seen, so it reaches the group without looping.
+    pub fn receive_complaint(&mut self, msg: &ComplaintMsg) -> Result<bool, DkgError> {
+        let complaint = msg.decode(self.inner_t)?;
+        self.roster.get(complaint.accuser_index)?;
+        self.roster.get(complaint.accused_index)?;
 
-        let key = (
-            complaint.complainant_index,
-            complaint.dealer_index,
-            complaint.coeff_index,
-        );
+        let accuser_key = self.roster.identity_key(complaint.accuser_index)?;
+        let verdict = complaint
+            .verify(self.epoch, &self.session_id, &accuser_key)
+            .map_err(|_| DkgError::InvalidComplaint(complaint.accuser_index))?;
+
+        let key = (complaint.accuser_index, complaint.accused_index);
         if !self.seen_complaints.insert(key) {
             return Ok(false);
         }
 
-        let commitment = self.states[complaint.coeff_index as usize]
-            .commitments
-            .get(complaint.dealer_index as usize - 1)
-            .and_then(|c| c.as_ref());
-
-        let verdict = match commitment {
-            Some(commitment) => crate::agreement::adjudicate::<PallasPoint>(
-                complaint.complainant_index,
-                &complaint.evidence,
-                &complaint.commitment_digest,
-                commitment,
-            ),
-            // No round-1 commitment from that dealer here: nothing to check
-            // the accusation against.
-            None => crate::agreement::Verdict::Unverifiable,
-        };
-
         match verdict {
-            crate::agreement::Verdict::DealerAtFault => {
+            dkg::ComplaintVerdict::Upheld => {
                 tracing::error!(
-                    "DKG aborted: member {} proved dealer {} sent a bad sub-share for \
-                     coefficient {}",
-                    complaint.complainant_index,
-                    complaint.dealer_index,
-                    complaint.coeff_index
+                    "DKG aborted: member {} proved dealer {} misbehaved in round {}",
+                    complaint.accuser_index,
+                    complaint.accused_index,
+                    complaint.round
                 );
+                for state in self.states.iter_mut() {
+                    let _ = state.disqualify(complaint.accused_index);
+                }
                 if self.aborted.is_none() {
-                    self.aborted = Some(complaint.clone());
+                    self.aborted = Some(AbortReason::Dealer(complaint.accused_index));
                 }
             }
-            crate::agreement::Verdict::AccuserAtFault => {
+            dkg::ComplaintVerdict::Unfounded => {
                 tracing::warn!(
-                    "ignoring a complaint from member {} against dealer {}: its own \
-                     evidence contradicts it",
-                    complaint.complainant_index,
-                    complaint.dealer_index
+                    "ignoring an unfounded complaint from member {} against dealer {}: \
+                     its own evidence verifies",
+                    complaint.accuser_index,
+                    complaint.accused_index
                 );
-                self.flagged.insert(complaint.complainant_index);
-            }
-            crate::agreement::Verdict::Unverifiable => {
-                let accusers = self
-                    .unverifiable
-                    .entry(complaint.dealer_index)
-                    .or_default();
-                accusers.insert(complaint.complainant_index);
-                let count = accusers.len();
-                tracing::warn!(
-                    "unverifiable complaint against dealer {} from member {} ({}/{} \
-                     independent accusers)",
-                    complaint.dealer_index,
-                    complaint.complainant_index,
-                    count,
-                    self.inner_t
-                );
-                if count >= self.inner_t as usize && self.aborted.is_none() {
-                    tracing::error!(
-                        "DKG aborted: {} independent members accuse dealer {}",
-                        count,
-                        complaint.dealer_index
-                    );
-                    self.aborted = Some(complaint.clone());
-                }
+                self.flagged.insert(complaint.accuser_index);
             }
         }
         Ok(true)
     }
 
-    /// Build a complaint bound to this ceremony.
-    fn complaint(
-        &self,
-        dealer_index: u32,
-        coeff_index: u32,
-        round: u8,
-        reason: crate::agreement::ComplaintReason,
-        evidence: crate::agreement::ComplaintEvidence,
-    ) -> Complaint {
-        Complaint {
-            complainant_index: self.holder_index,
-            dealer_index,
-            coeff_index,
-            epoch: self.epoch,
-            session_id: self.session_id,
-            roster_hash: self.roster_hash_hex.clone(),
-            round,
-            commitment_digest: self
-                .commitment_digest_of(coeff_index, dealer_index)
-                .unwrap_or_default(),
-            reason,
-            evidence,
-        }
+    /// The complaint this node raised, if any, for the caller to broadcast.
+    pub fn take_complaint(&mut self) -> Option<ComplaintMsg> {
+        self.pending_complaint.take()
     }
 
-    /// The digest of a dealer's round-1 commitment for one coefficient, as
-    /// this node recorded it. What a complaint names, and what an adjudicator
-    /// checks that name against.
-    pub fn commitment_digest_of(&self, coeff_index: u32, dealer_index: u32) -> Option<String> {
-        let commitment = self
-            .states
-            .get(coeff_index as usize)?
-            .commitments
-            .get(dealer_index as usize - 1)?
-            .as_ref()?;
-        Some(hex::encode(sealed::commitment_digest(commitment)))
-    }
-
-    /// Accusers whose complaints contradicted their own evidence.
-    ///
-    /// Read by the operator-facing tests and by anyone deciding whether a
-    /// member should stay on the roster; the ceremony itself only needs to
-    /// know that it did not act on them.
+    /// Accusers whose complaints were authentic but unfounded.
     #[allow(dead_code)]
     pub fn flagged_accusers(&self) -> &BTreeSet<u32> {
         &self.flagged
     }
 
-    fn abort(&mut self, complaint: Complaint) -> DkgError {
-        tracing::error!(
-            "DKG aborted: complaint against dealer {} for coefficient {}: {:?}",
-            complaint.dealer_index,
-            complaint.coeff_index,
-            complaint.reason
-        );
-        self.aborted = Some(complaint.clone());
-        DkgError::Aborted(Box::new(complaint))
+    fn abort(&mut self, reason: AbortReason) -> DkgError {
+        tracing::error!("DKG aborted: {:?}", reason);
+        self.aborted = Some(reason.clone());
+        DkgError::Aborted(reason)
     }
 }
 

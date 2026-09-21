@@ -70,6 +70,46 @@ use tokio::sync::Mutex;
 // Wire types
 // ---------------------------------------------------------------------------
 
+/// One inner holder's round-0 precommitment: `H(its round-1 commitments)`.
+///
+/// osst 0.5.0 enforces the commit–reveal round rather than leaving it to
+/// caller convention (M-20): `aggregate_inner_commitment_pair` takes the
+/// precommitments and refuses a reveal that does not match one. So the inner
+/// round is three: precommit, reveal, sign. A holder that waits to see the
+/// others' commitments before choosing its own is choosing `ΣD` — that is what
+/// the round exists to stop.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InnerPrecommit {
+    #[serde(with = "crate::codec::bytes32")]
+    pub session_id: [u8; 32],
+    /// The application message this session is for, hex.
+    pub message_hex: String,
+    pub holder_index: u32,
+    /// `inner_precommit(commitments)`, hex.
+    pub precommit: String,
+}
+
+impl Contribution for InnerPrecommit {
+    type Id = u32;
+    fn contributor_id(&self) -> u32 {
+        self.holder_index
+    }
+}
+
+impl InnerPrecommit {
+    fn digest(&self) -> Option<[u8; 32]> {
+        hex::decode(&self.precommit)
+            .ok()?
+            .as_slice()
+            .try_into()
+            .ok()
+    }
+}
+
+/// The collected round-0 set.
+pub type PrecommitList = Vec<InnerPrecommit>;
+
 /// One inner holder's round-1 nonce commitments. Public; broadcast.
 ///
 /// `message_hex` rides along so that a node asked to join a session can put
@@ -80,6 +120,7 @@ use tokio::sync::Mutex;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InnerCommitment {
+    #[serde(with = "crate::codec::bytes32")]
     pub session_id: [u8; 32],
     /// The application message this session is for, hex.
     pub message_hex: String,
@@ -130,6 +171,7 @@ pub struct OuterCommitment {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SigningRequest {
+    #[serde(with = "crate::codec::bytes32")]
     pub session_id: [u8; 32],
     /// The application message being authorized, hex.
     pub message_hex: String,
@@ -143,6 +185,8 @@ pub struct SigningRequest {
     pub group_pubkey: String,
     /// Every outer signer's commitments — the full set, not just ours.
     pub outer_commitments: Vec<OuterCommitment>,
+    /// The inner round-0 precommitments, one per revealing holder.
+    pub inner_precommits: Vec<PrecommitEntry>,
     /// The inner round-1 commitment set this round is running over.
     pub inner_commitments: Vec<InnerCommitment>,
     /// The inner quorum actually signing.
@@ -154,10 +198,19 @@ pub struct SigningRequest {
     pub outer_lambda: String,
 }
 
+/// One holder's round-0 precommitment, as the coordinator republishes it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrecommitEntry {
+    pub holder_index: u32,
+    pub precommit: String,
+}
+
 /// One inner holder's round-2 share.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InnerShare {
+    #[serde(with = "crate::codec::bytes32")]
     pub session_id: [u8; 32],
     pub holder_index: u32,
     /// `z_k`, canonical, hex.
@@ -203,10 +256,12 @@ pub enum SigningError {
          response under one nonce, which discloses the share"
     )]
     SessionSpent(String),
-    #[error("cannot record the session as spent: {0}")]
-    SpentStore(String),
     #[error("this node is holding as many signing sessions as it will")]
     TooManySessions,
+    #[error("holder {0} revealed commitments it never precommitted to")]
+    NoPrecommit(u32),
+    #[error("holder {0}'s reveal does not match its precommitment")]
+    PrecommitMismatch(u32),
     #[error("session {0} was opened for a different message")]
     MessageChanged(String),
     #[error(
@@ -247,6 +302,12 @@ pub struct LocalSigner {
     group_pubkey: Option<PallasPoint>,
     /// `P_j = σ_j·G` for every inner holder, for share verification.
     public_shares: Vec<(u32, PallasPoint)>,
+    /// The inner group's own threshold, from this node's key package. Passed
+    /// to `inner_sign_v2`, which has no way to learn it from its arguments and
+    /// must not take a coordinator's number for it.
+    pub inner_threshold: u32,
+    /// Round-1 commitments sampled but not yet revealed, by session.
+    reveals: BTreeMap<[u8; 32], InnerCommitment>,
     /// Live nonces, one per session, with the moment they were sampled.
     ///
     /// `InnerNonces` is not `Clone` and zeroizes on drop, so taking one out of
@@ -256,6 +317,7 @@ pub struct LocalSigner {
 }
 
 impl LocalSigner {
+    #[allow(clippy::too_many_arguments)] // a key package has this many parts
     pub fn new(
         holder_index: u32,
         nested_position: u32,
@@ -264,8 +326,11 @@ impl LocalSigner {
         share_scalar: Option<PallasScalar>,
         public_shares: Vec<(u32, PallasPoint)>,
         group_pubkey: Option<PallasPoint>,
+        inner_threshold: u32,
     ) -> Self {
         Self {
+            inner_threshold,
+            reveals: BTreeMap::new(),
             holder_index,
             nested_position,
             epoch,
@@ -299,11 +364,16 @@ impl LocalSigner {
         &self.public_shares
     }
 
-    /// Round 1: sample nonces for `session_id` and publish the commitments.
-    pub fn commit(&mut self, session_id: [u8; 32], message: &[u8]) -> InnerCommitment {
+    /// Round 0: sample nonces for `session_id` and publish the *precommitment*.
+    ///
+    /// The commitments themselves are held back until the precommit round
+    /// closes: that is the whole content of a commit–reveal round, and osst
+    /// 0.5.0 checks it rather than trusting the caller to have done it.
+    pub fn commit(&mut self, session_id: [u8; 32], message: &[u8]) -> InnerPrecommit {
         let mut rng = rand_core::OsRng;
         let (nonces, commitments) =
             nested::inner_commit::<PallasPoint, _>(self.holder_index, session_id, &mut rng);
+        let precommit = nested::inner_precommit::<PallasPoint>(&commitments);
         let wire = InnerCommitment {
             session_id,
             message_hex: hex::encode(message),
@@ -312,9 +382,20 @@ impl LocalSigner {
             binding: point_hex(&commitments.binding),
         };
         self.gc();
+        self.reveals.insert(session_id, wire);
         self.nonces
             .insert(session_id, (std::time::Instant::now(), nonces));
-        wire
+        InnerPrecommit {
+            session_id,
+            message_hex: hex::encode(message),
+            holder_index: self.holder_index,
+            precommit: hex::encode(precommit),
+        }
+    }
+
+    /// Round 1: the commitments this node precommitted to.
+    pub fn reveal(&self, session_id: &[u8; 32]) -> Option<InnerCommitment> {
+        self.reveals.get(session_id).cloned()
     }
 
     /// Whether this node has live nonces for a session.
@@ -328,8 +409,15 @@ impl LocalSigner {
     /// session's secret nonce material does not sit in the process for the
     /// lifetime of the daemon.
     pub fn gc(&mut self) {
+        let live: Vec<[u8; 32]> = self
+            .nonces
+            .iter()
+            .filter(|(_, (at, _))| at.elapsed() < crate::accumulator::SESSION_TTL)
+            .map(|(id, _)| *id)
+            .collect();
         self.nonces
             .retain(|_, (at, _)| at.elapsed() < crate::accumulator::SESSION_TTL);
+        self.reveals.retain(|id, _| live.contains(id));
     }
 
     /// How many sessions this node holds live nonces for.
@@ -341,10 +429,20 @@ impl LocalSigner {
     /// Round 2.
     ///
     /// The nonces are consumed whatever happens — they are moved into
-    /// `inner_sign_v2_with_context` — so a refusal is terminal for this
-    /// session and a retry needs a fresh round 1. That is the intended
-    /// behaviour: one commitment round, one share.
-    pub fn sign(&mut self, req: &SigningRequest) -> Result<InnerShare, SigningError> {
+    /// `inner_sign_v2_spending` — so a refusal is terminal for this session
+    /// and a retry needs a fresh round 0. That is the intended behaviour: one
+    /// commitment round, one share.
+    ///
+    /// `store` is the durable spent-session log. osst takes it here rather
+    /// than leaving it to the caller (M-13): the record is written before the
+    /// share is computed, from the session id in this node's *own* nonces, so
+    /// a coordinator cannot get a share recorded against a session the holder
+    /// is not in.
+    pub fn sign<S: nested::SpentSessions + ?Sized>(
+        &mut self,
+        store: &mut S,
+        req: &SigningRequest,
+    ) -> Result<InnerShare, SigningError> {
         if req.nested_index != self.nested_position {
             return Err(SigningError::WrongNestedPosition {
                 asked: req.nested_index,
@@ -354,31 +452,40 @@ impl LocalSigner {
         let share_scalar = self.share_scalar.ok_or(SigningError::NoShare)?;
         let group_pubkey = self.group_pubkey.ok_or(SigningError::NoShare)?;
 
-        // M-4: before anything is consumed. `from_coordinator_checked` below
-        // recomputes rho, c and lambda *using the supplied Y*, so a
-        // substituted Y yields a self-consistent package that passes every
-        // other check.
+        // M-4: `Y` is this node's, from its own key package. osst 0.5.0 took
+        // `group_pubkey` out of `NestedSigningRequest` outright, so a request
+        // cannot carry one — but the wire format still does, and a request
+        // naming a different one is a request about another group.
         if crate::codec::point_from_hex(&req.group_pubkey) != Some(group_pubkey) {
             return Err(SigningError::WrongGroupKey);
         }
 
-        let (_, nonces) = self
-            .nonces
-            .remove(&req.session_id)
-            .ok_or(SigningError::NoNonces)?;
-
         let parsed = ParsedRequest::parse(req)?;
 
-        // The scalars the coordinator asserted are checked against the ones
-        // derived here; a disagreement is ChallengeMismatch.
-        InnerSigningParamsV2::<PallasScalar>::from_coordinator_checked::<PallasPoint>(
-            &parsed.outer_binding,
-            &parsed.outer_challenge,
-            &parsed.outer_lambda,
+        // The outer context, derived locally from the package and OUR `Y`.
+        // `from_coordinator_checked` is deprecated in 0.5.0 and for the right
+        // reason: it recomputes everything using the *supplied* group key, so
+        // a substituted `Y` passes. The scalars the coordinator sent are
+        // compared against the local derivation here, and nothing else uses
+        // them.
+        let local = InnerSigningParamsV2::<PallasScalar>::from_outer::<PallasPoint>(
             &parsed.package,
-            &parsed.group_pubkey,
+            &group_pubkey,
             req.nested_index,
         )?;
+        if local.outer_binding() != &parsed.outer_binding
+            || local.outer_challenge() != &parsed.outer_challenge
+            || local.outer_lambda() != &parsed.outer_lambda
+        {
+            return Err(SigningError::Osst(OsstError::ChallengeMismatch));
+        }
+
+        let nonces = self
+            .nonces
+            .remove(&req.session_id)
+            .ok_or(SigningError::NoNonces)?
+            .1;
+        self.reveals.remove(&req.session_id);
 
         // The context comes from OUR state. If the coordinator built the outer
         // package for a different epoch or a different roster, these bytes
@@ -388,18 +495,22 @@ impl LocalSigner {
         let share = SecretShare::new(self.holder_index, share_scalar)?;
         let request = NestedSigningRequest {
             package: &parsed.package,
-            // The local value, not the parsed one — they are equal by the
-            // check above, and this is the one that stays right if that check
-            // is ever moved.
-            group_pubkey: &group_pubkey,
             nested_index: req.nested_index,
             session_id: req.session_id,
+            inner_precommits: &parsed.inner_precommits,
             inner_commitments: &parsed.inner_commitments,
             active_indices: &req.active_indices,
+            // Ours, from the key package — never the coordinator's number.
+            inner_threshold: self.inner_threshold,
         };
 
-        let sig = nested::inner_sign_v2_with_context::<PallasPoint>(
-            nonces, &share, &ctx, &request,
+        let sig = nested::inner_sign_v2_spending::<PallasPoint, S>(
+            store,
+            nonces,
+            &share,
+            &group_pubkey,
+            &ctx.encode(),
+            &request,
         )?;
 
         Ok(InnerShare {
@@ -415,6 +526,7 @@ pub struct ParsedRequest {
     pub message: Vec<u8>,
     pub package: SigningPackage<PallasPoint>,
     pub group_pubkey: PallasPoint,
+    pub inner_precommits: Vec<(u32, [u8; 32])>,
     pub inner_commitments: Vec<InnerCommitments<PallasPoint>>,
     pub outer_binding: PallasScalar,
     pub outer_challenge: PallasScalar,
@@ -456,10 +568,23 @@ impl ParsedRequest {
             })
             .collect::<Result<_, SigningError>>()?;
 
+        let inner_precommits: Vec<(u32, [u8; 32])> = req
+            .inner_precommits
+            .iter()
+            .map(|p| {
+                let digest: [u8; 32] = hex::decode(&p.precommit)
+                    .ok()
+                    .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+                    .ok_or(SigningError::Malformed("precommit is not 32 bytes of hex"))?;
+                Ok((p.holder_index, digest))
+            })
+            .collect::<Result<_, SigningError>>()?;
+
         Ok(Self {
             message,
             package: SigningPackage::new(signed_bytes, outer)?,
             group_pubkey,
+            inner_precommits,
             inner_commitments,
             outer_binding: scalar_from_hex(&req.outer_binding)
                 .ok_or(SigningError::Malformed("outer_binding is not a canonical scalar"))?,
@@ -477,6 +602,8 @@ impl ParsedRequest {
 
 /// Composes the accumulator, the peer transport and the local signer.
 pub struct SigningService {
+    /// Round 0: the precommitments.
+    pub round0: ThresholdAccumulator<[u8; 32], InnerPrecommit, PrecommitList>,
     pub round1: ThresholdAccumulator<[u8; 32], InnerCommitment, CommitmentList>,
     pub round2: ThresholdAccumulator<[u8; 32], InnerShare, ShareList>,
     pub signer: Arc<Mutex<LocalSigner>>,
@@ -488,7 +615,7 @@ pub struct SigningService {
     /// What this node is willing to sign.
     pub policy: Arc<dyn crate::policy::SigningPolicy>,
     /// Session ids this node has already released a share for (M-13).
-    pub spent: Arc<dyn crate::agreement::SpentSessions>,
+    pub spent: Arc<crate::agreement::FileSpentSessions>,
     /// The round-2 request per session, as first seen.
     pub requests: Arc<Mutex<BTreeMap<[u8; 32], SigningRequest>>>,
     /// `z_nested` per session, once a verified quorum has been aggregated.
@@ -500,6 +627,7 @@ pub struct SigningService {
 impl Clone for SigningService {
     fn clone(&self) -> Self {
         Self {
+            round0: self.round0.clone(),
             round1: self.round1.clone(),
             round2: self.round2.clone(),
             signer: self.signer.clone(),
@@ -520,9 +648,10 @@ impl SigningService {
         threshold: usize,
         peers: PeerSet,
         policy: Arc<dyn crate::policy::SigningPolicy>,
-        spent: Arc<dyn crate::agreement::SpentSessions>,
+        spent: Arc<crate::agreement::FileSpentSessions>,
     ) -> Self {
         Self {
+            round0: ThresholdAccumulator::new(threshold),
             round1: ThresholdAccumulator::new(threshold),
             round2: ThresholdAccumulator::new(threshold),
             signer: Arc::new(Mutex::new(signer)),
@@ -588,27 +717,96 @@ impl SigningService {
         }
     }
 
-    /// Round 1: commit, accumulate locally, broadcast. Public data only.
+    /// Round 0: sample nonces, publish the precommitment, and reveal once the
+    /// precommit round has closed.
     pub async fn start_round1(
         &self,
         session_id: [u8; 32],
         message: &[u8],
-    ) -> Result<InnerCommitment, SigningError> {
+    ) -> Result<InnerPrecommit, SigningError> {
         self.open_session(session_id, message).await?;
         if !self
-            .round1
-            .ensure_session(session_id, |c| c.to_vec())
+            .round0
+            .ensure_session(session_id, |p| p.to_vec())
             .await
+            || !self
+                .round1
+                .ensure_session(session_id, |c| c.to_vec())
+                .await
         {
             return Err(SigningError::TooManySessions);
         }
-        let commitment = self.signer.lock().await.commit(session_id, message);
-        let _ = self.round1.accumulate(&session_id, commitment.clone()).await;
-        self.peers.broadcast("/sign/commitment", &commitment);
-        Ok(commitment)
+        let precommit = self.signer.lock().await.commit(session_id, message);
+        let _ = self.round0.accumulate(&session_id, precommit.clone()).await;
+        self.peers.broadcast("/sign/precommit", &precommit);
+        self.maybe_reveal(&session_id).await;
+        Ok(precommit)
     }
 
-    /// Accept a peer's round-1 commitment, contributing our own if we have not.
+    /// Accept a peer's round-0 precommitment, contributing ours if we have not.
+    pub async fn receive_precommit(
+        &self,
+        precommit: InnerPrecommit,
+    ) -> Result<AccumulateResult<PrecommitList>, SigningError> {
+        let session_id = precommit.session_id;
+        let message = hex::decode(&precommit.message_hex)
+            .map_err(|_| SigningError::Malformed("message_hex is not hex"))?;
+        if precommit.digest().is_none() {
+            return Err(SigningError::Malformed("precommit is not 32 bytes of hex"));
+        }
+        self.open_session(session_id, &message).await?;
+        if !self
+            .round0
+            .ensure_session(session_id, |p| p.to_vec())
+            .await
+            || !self
+                .round1
+                .ensure_session(session_id, |c| c.to_vec())
+                .await
+        {
+            return Err(SigningError::TooManySessions);
+        }
+        let result = self.round0.accumulate(&session_id, precommit).await;
+
+        let mut signer = self.signer.lock().await;
+        if !signer.has_nonces(&session_id) {
+            let ours = signer.commit(session_id, &message);
+            drop(signer);
+            let _ = self.round0.accumulate(&session_id, ours.clone()).await;
+            self.peers.broadcast("/sign/precommit", &ours);
+        }
+        self.maybe_reveal(&session_id).await;
+        Ok(result)
+    }
+
+    /// Publish this node's round-1 commitments, once the precommit round has
+    /// reached the threshold. Idempotent.
+    async fn maybe_reveal(&self, session_id: &[u8; 32]) {
+        let (collected, threshold, _) = match self.round0.status(session_id).await {
+            Some(s) => s,
+            None => return,
+        };
+        if collected < threshold {
+            return;
+        }
+        let ours = match self.signer.lock().await.reveal(session_id) {
+            Some(c) => c,
+            None => return,
+        };
+        if matches!(
+            self.round1.accumulate(session_id, ours.clone()).await,
+            AccumulateResult::Duplicate
+        ) {
+            return;
+        }
+        self.peers.broadcast("/sign/commitment", &ours);
+    }
+
+    /// Accept a peer's round-1 reveal.
+    ///
+    /// A reveal is accepted only against a precommitment this node already
+    /// holds from that holder, and only if it matches: the commit–reveal round
+    /// is not a convention here either.
     pub async fn receive_commitment(
         &self,
         commitment: InnerCommitment,
@@ -618,23 +816,20 @@ impl SigningService {
             .map_err(|_| SigningError::Malformed("message_hex is not hex"))?;
         self.open_session(session_id, &message).await?;
 
-        if !self
-            .round1
-            .ensure_session(session_id, |c| c.to_vec())
-            .await
-        {
-            return Err(SigningError::TooManySessions);
+        let decoded = commitment
+            .decode()
+            .ok_or(SigningError::Malformed("commitment is not a canonical point"))?;
+        let precommits = self.round0.contributions(&session_id).await;
+        let claimed = precommits
+            .iter()
+            .find(|p| p.holder_index == commitment.holder_index)
+            .and_then(|p| p.digest())
+            .ok_or(SigningError::NoPrecommit(commitment.holder_index))?;
+        if !nested::verify_inner_precommit::<PallasPoint>(&claimed, &decoded) {
+            return Err(SigningError::PrecommitMismatch(commitment.holder_index));
         }
-        let result = self.round1.accumulate(&session_id, commitment).await;
 
-        let mut signer = self.signer.lock().await;
-        if !signer.has_nonces(&session_id) {
-            let ours = signer.commit(session_id, &message);
-            drop(signer);
-            let _ = self.round1.accumulate(&session_id, ours.clone()).await;
-            self.peers.broadcast("/sign/commitment", &ours);
-        }
-        Ok(result)
+        Ok(self.round1.accumulate(&session_id, commitment).await)
     }
 
     /// Round 2: produce our share, accumulate it, and pass the request on so
@@ -669,14 +864,8 @@ impl SigningService {
             return Err(SigningError::TooManySessions);
         }
 
-        // M-13: the durable record goes down before the share is produced, not
-        // after. A crash between releasing a share and recording the session
-        // is the window that makes a restart a nonce reuse.
-        self.spent
-            .mark_spent(&session_id)
-            .map_err(|e| SigningError::SpentStore(e.to_string()))?;
-
-        let share = self.signer.lock().await.sign(&req)?;
+        let mut store = crate::agreement::SpentSessionStore::new(self.spent.clone());
+        let share = self.signer.lock().await.sign(&mut store, &req)?;
         let _ = self.round2.accumulate(&session_id, share.clone()).await;
         self.peers.broadcast("/sign/share", &share);
         self.peers.broadcast("/sign/round2", &req);
@@ -777,8 +966,13 @@ impl SigningService {
 /// index.
 pub fn nested_commitment_pair(
     session_id: &[u8; 32],
+    precommits: &[InnerPrecommit],
     commitments: &[InnerCommitment],
 ) -> Result<(PallasPoint, PallasPoint), SigningError> {
+    let pairs: Vec<(u32, [u8; 32])> = precommits
+        .iter()
+        .filter_map(|p| Some((p.holder_index, p.digest()?)))
+        .collect();
     let decoded: Vec<InnerCommitments<PallasPoint>> = commitments
         .iter()
         .map(|c| {
@@ -787,6 +981,6 @@ pub fn nested_commitment_pair(
         })
         .collect::<Result<_, SigningError>>()?;
     Ok(nested::aggregate_inner_commitment_pair::<PallasPoint>(
-        session_id, &decoded,
+        session_id, &pairs, &decoded,
     )?)
 }

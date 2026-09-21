@@ -30,6 +30,8 @@
 
 use ed25519_dalek::SigningKey;
 use hkdf::Hkdf;
+use osst::curve::{OsstPoint, OsstScalar};
+use pasta_curves::pallas::{Point as PallasPoint, Scalar as PallasScalar};
 use sha2::Sha256;
 use std::fs;
 use std::io;
@@ -48,6 +50,9 @@ pub const IDENTITY_SALT: &[u8] = b"narsild/identity/v1";
 
 /// HKDF info string for the ed25519 request-signing key.
 pub const ED25519_INFO: &[u8] = b"narsild/identity/ed25519/v1";
+
+/// HKDF info string for the ceremony-curve identity key that signs complaints.
+pub const CEREMONY_IDENTITY_INFO: &[u8] = b"narsild/identity/pallas/v1";
 
 /// A node's long-term identity.
 pub struct NodeIdentity {
@@ -130,6 +135,33 @@ impl NodeIdentity {
         self.ed25519_signing_key().verifying_key().to_bytes()
     }
 
+    /// This node's long-term identity **scalar on the ceremony curve**, which
+    /// signs DKG complaints (`osst::dkg::Complaint`).
+    ///
+    /// osst signs complaints with a Schnorr key on the curve the ceremony
+    /// already uses rather than with the X25519 static key or a second
+    /// ed25519 one: the accuser's verification share does not exist yet during
+    /// the DKG that produces it, so a long-term key is needed either way, and
+    /// a scalar on `P` reuses the backend already compiled in. Same seed,
+    /// third `info` string.
+    pub fn ceremony_identity_secret(&self) -> PallasScalar {
+        let hk = Hkdf::<Sha256>::new(Some(IDENTITY_SALT), &self.seed);
+        let mut okm = [0u8; 64];
+        hk.expand(CEREMONY_IDENTITY_INFO, &mut okm)
+            .expect("64 bytes is a valid HKDF-SHA256 output length");
+        // Wide reduction: a uniform scalar, with no modulo bias and no
+        // rejection loop.
+        let scalar = PallasScalar::from_bytes_wide(&okm);
+        okm.zeroize();
+        scalar
+    }
+
+    /// The public half of the ceremony identity key — what goes in peers'
+    /// rosters as the third key.
+    pub fn ceremony_identity_public(&self) -> PallasPoint {
+        PallasPoint::generator().mul_scalar(&self.ceremony_identity_secret())
+    }
+
     #[cfg(unix)]
     fn check_mode(path: &Path) -> io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
@@ -196,6 +228,13 @@ mod tests {
         assert_ne!(signing.to_bytes(), [3u8; 32]);
         assert_ne!(signing.to_bytes(), id.x25519_secret());
         assert_ne!(id.ed25519_public(), id.x25519_public());
+        // And the ceremony identity is a third, independent key.
+        assert_ne!(id.ceremony_identity_secret().to_bytes(), signing.to_bytes());
+        assert_ne!(id.ceremony_identity_secret().to_bytes(), id.x25519_secret());
+        assert_eq!(
+            id.ceremony_identity_public(),
+            NodeIdentity::from_seed_for_test([3u8; 32]).ceremony_identity_public()
+        );
         // Deterministic: the same seed yields the same signing key.
         assert_eq!(
             signing.to_bytes(),

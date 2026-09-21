@@ -44,6 +44,13 @@ fn roster() -> Arc<Roster> {
                     x25519_pub: x25519_public_from_seed(&seed(i)),
                     ed25519_pub: crate::identity::NodeIdentity::from_seed_for_test(seed(i))
                         .ed25519_public(),
+                    identity_pub: PallasPoint::compress(
+                        &crate::identity::NodeIdentity::from_seed_for_test(seed(i))
+                            .ceremony_identity_public(),
+                    )
+                    .as_ref()
+                    .try_into()
+                    .unwrap(),
                 })
                 .collect(),
         )
@@ -69,6 +76,8 @@ fn run_dkg(
                 i,
                 roster.clone(),
                 x25519_secret_from_seed(&seed(i)),
+                crate::identity::NodeIdentity::from_seed_for_test(seed(i))
+                    .ceremony_identity_secret(),
                 EPOCH,
                 CEREMONY_NONCE,
                 INNER_T,
@@ -172,71 +181,22 @@ fn a_corrupted_sealed_package_names_its_dealer() {
     })
     .unwrap_err();
     match err {
-        DkgError::Aborted(c) => assert_eq!(c.dealer_index, 2),
+        DkgError::Aborted(crate::dkg::AbortReason::SealedPackage(i)) => assert_eq!(i, 2),
         other => panic!("expected an abort naming dealer 2, got {other}"),
     }
 }
 
-/// M-6: one complaint nobody else can check does not stop the ceremony, and
-/// `inner_t` independent ones do.
+/// M-6: a complaint is a signed, ceremony-bound, publicly checkable value, and
+/// every node reaches the same verdict from it.
 ///
-/// The old behaviour believed any complaint from anyone, so a single packet
-/// was a denial of service. The evidence osst 0.4.0 lets a complainant publish
-/// for a round-2 failure is not publicly verifiable — `open_subshare` discards
-/// the plaintext — so the sound policy for that class is a threshold of
-/// independent accusers, not trust.
+/// osst owns the verification and the adjudication; what is tested here is
+/// narsild's half — the wire codec, the roster identity key it verifies
+/// against, the re-broadcast signal, and that an upheld complaint stops this
+/// node while an unfounded one flags its accuser instead.
 #[test]
-fn an_unverifiable_complaint_needs_a_threshold_of_accusers() {
-    let roster = roster();
-    let mut ceremonies: Vec<DkgCeremony> = (1..=N).map(|i| ceremony_for(i, &roster)).collect();
+fn a_complaint_is_verified_against_the_roster_and_adjudicated() {
+    use osst::dkg as odkg;
 
-    let broadcasts: Vec<_> = ceremonies.iter().map(|c| c.round1_broadcast()).collect();
-    for ceremony in ceremonies.iter_mut() {
-        for b in &broadcasts {
-            ceremony.receive_round1(b).unwrap();
-        }
-    }
-
-    let complaint_from = |accuser: u32, c: &DkgCeremony| crate::dkg::Complaint {
-        complainant_index: accuser,
-        dealer_index: 2,
-        coeff_index: 0,
-        epoch: EPOCH,
-        session_id: c.session_id,
-        roster_hash: hex::encode(roster.hash()),
-        round: 2,
-        commitment_digest: c.commitment_digest_of(0, 2).unwrap(),
-        reason: crate::agreement::ComplaintReason::SealedOpenFailed,
-        evidence: crate::agreement::ComplaintEvidence::SealedRejected {
-            ciphertext_digest: hex::encode([7u8; 32]),
-        },
-    };
-
-    // One accuser: recorded, re-broadcast, but not acted on.
-    let first = complaint_from(1, &ceremonies[2]);
-    assert!(ceremonies[2].receive_complaint(&first).unwrap());
-    assert!(ceremonies[2].abort_reason().is_none());
-
-    // The same complaint again is not a second accuser.
-    assert!(!ceremonies[2].receive_complaint(&first).unwrap());
-    assert!(ceremonies[2].abort_reason().is_none());
-
-    // A second, independent accuser reaches the inner threshold.
-    let second = complaint_from(3, &ceremonies[2]);
-    assert!(ceremonies[2].receive_complaint(&second).unwrap());
-    assert!(ceremonies[2].abort_reason().is_some());
-
-    // And an aborted ceremony will not finalize into a key package.
-    assert!(matches!(
-        ceremonies[2].finalize().unwrap_err(),
-        DkgError::AlreadyAborted(_)
-    ));
-}
-
-/// M-6: a complaint whose own evidence contradicts it is ignored, and its
-/// accuser is flagged rather than obeyed.
-#[test]
-fn a_complaint_that_names_the_wrong_commitment_is_ignored() {
     let roster = roster();
     let mut node = ceremony_for(3, &roster);
     for i in 1..=N {
@@ -248,36 +208,140 @@ fn a_complaint_that_names_the_wrong_commitment_is_ignored() {
         node.receive_round1(&b).unwrap();
     }
 
-    let bogus = crate::dkg::Complaint {
-        complainant_index: 1,
+    // Dealer 2's genuine package, with a proof of knowledge that does verify.
+    let honest = ceremony_for(2, &roster).round1_broadcast();
+    let commitment = osst::reshare::DealerCommitment::<PallasPoint> {
         dealer_index: 2,
-        coeff_index: 0,
-        epoch: EPOCH,
-        session_id: node.session_id,
-        roster_hash: hex::encode(roster.hash()),
-        round: 2,
-        // A commitment this ceremony does not contain.
-        commitment_digest: hex::encode([0xaa; 32]),
-        reason: crate::agreement::ComplaintReason::InvalidSubShare,
-        evidence: crate::agreement::ComplaintEvidence::SubShare {
-            value_hex: hex::encode([3u8; 32]),
+        coefficients: honest.coefficients[0]
+            .commitments
+            .iter()
+            .map(|h| point_from_hex(h).unwrap())
+            .collect(),
+    };
+    let genuine_package = odkg::Round1Package {
+        commitment: commitment.clone(),
+        proof_of_knowledge: odkg::ProofOfKnowledge {
+            r: point_from_hex(&honest.coefficients[0].pok_r).unwrap(),
+            z: scalar_from_hex(&honest.coefficients[0].pok_z).unwrap(),
         },
     };
 
-    node.receive_complaint(&bogus).unwrap();
-    assert!(node.abort_reason().is_none(), "a false complaint stopped the ceremony");
+    let accuser = crate::identity::NodeIdentity::from_seed_for_test(seed(1));
+    let mut rng = rand_core::OsRng;
+
+    // An accusation against a package whose proof verifies: authentic, and
+    // wrong. The accuser is flagged; the ceremony carries on.
+    let unfounded = odkg::Complaint::<PallasPoint>::sign(
+        EPOCH,
+        node.session_id,
+        1,
+        1,
+        odkg::ComplaintEvidence::ForgedProofOfKnowledge {
+            package: genuine_package,
+        },
+        &accuser.ceremony_identity_secret(),
+        &mut rng,
+    )
+    .unwrap();
+    let wire = crate::dkg::ComplaintMsg::encode(&unfounded).unwrap();
+
+    // The wire form round-trips, and it is what reaches a peer.
+    let json = serde_json::to_string(&wire).unwrap();
+    let back: crate::dkg::ComplaintMsg = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, wire);
+
+    assert!(node.receive_complaint(&back).unwrap(), "first sight: re-broadcast");
+    assert!(!node.receive_complaint(&back).unwrap(), "seen: do not loop");
+    assert!(node.abort_reason().is_none(), "an unfounded complaint stopped the ceremony");
     assert!(node.flagged_accusers().contains(&1));
+
+    // A forged proof of knowledge: upheld, and the ceremony stops.
+    let forged = odkg::Round1Package {
+        commitment,
+        proof_of_knowledge: odkg::ProofOfKnowledge {
+            r: PallasPoint::generator(),
+            z: PallasScalar::from_u32(1),
+        },
+    };
+    let upheld = odkg::Complaint::<PallasPoint>::sign(
+        EPOCH,
+        node.session_id,
+        1,
+        2,
+        odkg::ComplaintEvidence::ForgedProofOfKnowledge { package: forged },
+        &crate::identity::NodeIdentity::from_seed_for_test(seed(2)).ceremony_identity_secret(),
+        &mut rng,
+    )
+    .unwrap();
+    node.receive_complaint(&crate::dkg::ComplaintMsg::encode(&upheld).unwrap())
+        .unwrap();
+    assert_eq!(
+        node.abort_reason(),
+        Some(&crate::dkg::AbortReason::Dealer(2))
+    );
 }
 
-/// M-6: a complaint from another ceremony does not replay into this one.
+/// M-6: a complaint signed by a key the roster does not name is not a
+/// complaint. The identity key comes from the roster, never from the message.
+#[test]
+fn a_complaint_signed_by_a_stranger_is_refused() {
+    use osst::dkg as odkg;
+
+    let roster = roster();
+    let mut node = ceremony_for(3, &roster);
+    for i in 1..=N {
+        let b = if i == 3 {
+            node.round1_broadcast()
+        } else {
+            ceremony_for(i, &roster).round1_broadcast()
+        };
+        node.receive_round1(&b).unwrap();
+    }
+
+    let stranger = crate::identity::NodeIdentity::from_seed_for_test([0xee; 32]);
+    let mut rng = rand_core::OsRng;
+    let forged = odkg::Complaint::<PallasPoint>::sign(
+        EPOCH,
+        node.session_id,
+        1,
+        1, // claims to be member 1
+        odkg::ComplaintEvidence::ForgedProofOfKnowledge {
+            package: odkg::Round1Package {
+                commitment: osst::reshare::DealerCommitment::<PallasPoint> {
+                    dealer_index: 2,
+                    coefficients: vec![PallasPoint::generator(); INNER_T as usize],
+                },
+                proof_of_knowledge: odkg::ProofOfKnowledge {
+                    r: PallasPoint::generator(),
+                    z: PallasScalar::from_u32(1),
+                },
+            },
+        },
+        &stranger.ceremony_identity_secret(),
+        &mut rng,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        node.receive_complaint(&crate::dkg::ComplaintMsg::encode(&forged).unwrap()),
+        Err(DkgError::InvalidComplaint(1))
+    ));
+    assert!(node.abort_reason().is_none());
+}
+
+/// M-6: a complaint from another ceremony does not replay into this one — the
+/// binding is osst's, and this is the check that it reaches narsild.
 #[test]
 fn a_complaint_from_another_ceremony_is_refused() {
+    use osst::dkg as odkg;
+
     let roster = roster();
     let mut node = ceremony_for(1, &roster);
     let other = DkgCeremony::new(
         1,
         roster.clone(),
         x25519_secret_from_seed(&seed(1)),
+        crate::identity::NodeIdentity::from_seed_for_test(seed(1)).ceremony_identity_secret(),
         EPOCH,
         [0xeeu8; 32],
         INNER_T,
@@ -285,23 +349,32 @@ fn a_complaint_from_another_ceremony_is_refused() {
     )
     .unwrap();
 
-    let replayed = crate::dkg::Complaint {
-        complainant_index: 2,
-        dealer_index: 3,
-        coeff_index: 0,
-        epoch: EPOCH,
-        session_id: other.session_id,
-        roster_hash: hex::encode(roster.hash()),
-        round: 2,
-        commitment_digest: hex::encode([1u8; 32]),
-        reason: crate::agreement::ComplaintReason::SealedOpenFailed,
-        evidence: crate::agreement::ComplaintEvidence::SealedRejected {
-            ciphertext_digest: hex::encode([2u8; 32]),
+    let mut rng = rand_core::OsRng;
+    let replayed = odkg::Complaint::<PallasPoint>::sign(
+        EPOCH,
+        other.session_id,
+        1,
+        2,
+        odkg::ComplaintEvidence::ForgedProofOfKnowledge {
+            package: odkg::Round1Package {
+                commitment: osst::reshare::DealerCommitment::<PallasPoint> {
+                    dealer_index: 3,
+                    coefficients: vec![PallasPoint::generator(); INNER_T as usize],
+                },
+                proof_of_knowledge: odkg::ProofOfKnowledge {
+                    r: PallasPoint::generator(),
+                    z: PallasScalar::from_u32(1),
+                },
+            },
         },
-    };
+        &crate::identity::NodeIdentity::from_seed_for_test(seed(2)).ceremony_identity_secret(),
+        &mut rng,
+    )
+    .unwrap();
+
     assert!(matches!(
-        node.receive_complaint(&replayed).unwrap_err(),
-        DkgError::CeremonyMismatch(2)
+        node.receive_complaint(&crate::dkg::ComplaintMsg::encode(&replayed).unwrap()),
+        Err(DkgError::InvalidComplaint(2))
     ));
     assert!(node.abort_reason().is_none());
 }
@@ -319,6 +392,8 @@ fn a_node_with_a_different_roster_cannot_join() {
         1,
         honest.clone(),
         x25519_secret_from_seed(&seed(1)),
+        crate::identity::NodeIdentity::from_seed_for_test(seed(1))
+            .ceremony_identity_secret(),
         EPOCH,
         CEREMONY_NONCE,
         INNER_T,
@@ -329,6 +404,8 @@ fn a_node_with_a_different_roster_cannot_join() {
         2,
         tampered,
         x25519_secret_from_seed(&seed(2)),
+        crate::identity::NodeIdentity::from_seed_for_test(seed(2))
+            .ceremony_identity_secret(),
         EPOCH,
         CEREMONY_NONCE,
         INNER_T,
@@ -404,6 +481,19 @@ struct InnerRound1 {
     commitments: InnerCommitments<PallasPoint>,
 }
 
+/// The round-0 precommitments for a round-1 set.
+fn precommit_pairs(round1: &[InnerRound1]) -> Vec<(u32, [u8; 32])> {
+    round1
+        .iter()
+        .map(|r| {
+            (
+                r.commitments.holder_index,
+                nested::inner_precommit::<PallasPoint>(&r.commitments),
+            )
+        })
+        .collect()
+}
+
 fn inner_round1(session_id: [u8; 32]) -> Vec<InnerRound1> {
     let mut rng = rand_core::OsRng;
     (1..=N)
@@ -414,6 +504,22 @@ fn inner_round1(session_id: [u8; 32]) -> Vec<InnerRound1> {
                 nonces,
                 commitments,
             }
+        })
+        .collect()
+}
+
+fn wire_precommits(
+    round1: &[InnerRound1],
+    message: &[u8],
+    session_id: [u8; 32],
+) -> Vec<crate::signing::InnerPrecommit> {
+    precommit_pairs(round1)
+        .into_iter()
+        .map(|(holder_index, precommit)| crate::signing::InnerPrecommit {
+            session_id,
+            message_hex: hex::encode(message),
+            holder_index,
+            precommit: hex::encode(precommit),
         })
         .collect()
 }
@@ -445,10 +551,15 @@ fn the_group_produces_a_nested_signature_that_osst_verifies() {
     let round1 = inner_round1(session_id);
     let inner_commitments: Vec<InnerCommitments<PallasPoint>> =
         round1.iter().map(|r| r.commitments.clone()).collect();
+    let precommits = precommit_pairs(&round1);
 
     // The nested position's outer commitment pair.
     let (d_nested, e_nested) =
-        nested::aggregate_inner_commitment_pair::<PallasPoint>(&session_id, &inner_commitments)
+        nested::aggregate_inner_commitment_pair::<PallasPoint>(
+            &session_id,
+            &precommits,
+            &inner_commitments,
+        )
             .unwrap();
 
     // The other outer signer commits normally.
@@ -471,11 +582,12 @@ fn the_group_produces_a_nested_signature_that_osst_verifies() {
     let active: Vec<u32> = (1..=N).collect();
     let request = NestedSigningRequest {
         package: &package,
-        group_pubkey: &group.group_pubkey,
         nested_index: NESTED_POSITION,
         session_id,
+        inner_precommits: &precommits,
         inner_commitments: &inner_commitments,
         active_indices: &active,
+        inner_threshold: INNER_T,
     };
 
     // Each inner holder signs the context bytes, from its own share.
@@ -486,7 +598,7 @@ fn the_group_produces_a_nested_signature_that_osst_verifies() {
         let share = SecretShare::new(index, sigma).unwrap();
         shares.push(
             nested::inner_sign_v2_with_context::<PallasPoint>(
-                r1.nonces, &share, &ctx, &request,
+                r1.nonces, &share, &group.group_pubkey, &ctx, &request,
             )
             .unwrap(),
         );
@@ -523,7 +635,7 @@ fn the_group_produces_a_nested_signature_that_osst_verifies() {
     .unwrap();
 
     let signature = frost::Signature::<PallasPoint> {
-        r: package.group_commitment(),
+        r: package.group_commitment(&group.group_pubkey),
         z: z_nested.add(&z_2.response),
     };
 
@@ -552,8 +664,13 @@ fn a_holder_refuses_a_round_built_for_another_epoch() {
     let round1 = inner_round1(session_id);
     let inner_commitments: Vec<InnerCommitments<PallasPoint>> =
         round1.iter().map(|r| r.commitments.clone()).collect();
+    let precommits = precommit_pairs(&round1);
     let (d, e) =
-        nested::aggregate_inner_commitment_pair::<PallasPoint>(&session_id, &inner_commitments)
+        nested::aggregate_inner_commitment_pair::<PallasPoint>(
+            &session_id,
+            &precommits,
+            &inner_commitments,
+        )
             .unwrap();
 
     // The coordinator builds its package for the NEXT epoch.
@@ -571,11 +688,12 @@ fn a_holder_refuses_a_round_built_for_another_epoch() {
     let active: Vec<u32> = (1..=N).collect();
     let request = NestedSigningRequest {
         package: &package,
-        group_pubkey: &group.group_pubkey,
         nested_index: NESTED_POSITION,
         session_id,
+        inner_precommits: &precommits,
         inner_commitments: &inner_commitments,
         active_indices: &active,
+        inner_threshold: INNER_T,
     };
 
     // The holder builds its context from its own key package's epoch.
@@ -587,6 +705,7 @@ fn a_holder_refuses_a_round_built_for_another_epoch() {
     let err = nested::inner_sign_v2_with_context::<PallasPoint>(
         holder.nonces,
         &share,
+        &group.group_pubkey,
         &own_ctx,
         &request,
     )
@@ -605,8 +724,13 @@ fn a_holder_refuses_a_round_built_for_another_roster() {
     let round1 = inner_round1(session_id);
     let inner_commitments: Vec<InnerCommitments<PallasPoint>> =
         round1.iter().map(|r| r.commitments.clone()).collect();
+    let precommits = precommit_pairs(&round1);
     let (d, e) =
-        nested::aggregate_inner_commitment_pair::<PallasPoint>(&session_id, &inner_commitments)
+        nested::aggregate_inner_commitment_pair::<PallasPoint>(
+            &session_id,
+            &precommits,
+            &inner_commitments,
+        )
             .unwrap();
 
     let package = SigningPackage::<PallasPoint>::new(
@@ -622,11 +746,12 @@ fn a_holder_refuses_a_round_built_for_another_roster() {
     let active: Vec<u32> = (1..=N).collect();
     let request = NestedSigningRequest {
         package: &package,
-        group_pubkey: &group.group_pubkey,
         nested_index: NESTED_POSITION,
         session_id,
+        inner_precommits: &precommits,
         inner_commitments: &inner_commitments,
         active_indices: &active,
+        inner_threshold: INNER_T,
     };
 
     let mut round1 = round1;
@@ -638,6 +763,7 @@ fn a_holder_refuses_a_round_built_for_another_roster() {
         nested::inner_sign_v2_with_context::<PallasPoint>(
             holder.nonces,
             &share,
+            &group.group_pubkey,
             &own_ctx,
             &request
         )
@@ -658,8 +784,13 @@ fn a_coordinator_supplied_challenge_is_checked_against_the_package() {
     let round1 = inner_round1(session_id);
     let inner_commitments: Vec<InnerCommitments<PallasPoint>> =
         round1.iter().map(|r| r.commitments.clone()).collect();
+    let precommits = precommit_pairs(&round1);
     let (d, e) =
-        nested::aggregate_inner_commitment_pair::<PallasPoint>(&session_id, &inner_commitments)
+        nested::aggregate_inner_commitment_pair::<PallasPoint>(
+            &session_id,
+            &precommits,
+            &inner_commitments,
+        )
             .unwrap();
 
     let package = SigningPackage::<PallasPoint>::new(
@@ -678,26 +809,40 @@ fn a_coordinator_supplied_challenge_is_checked_against_the_package() {
     )
     .unwrap();
 
-    let checked = InnerSigningParamsV2::<PallasScalar>::from_coordinator_checked::<PallasPoint>(
-        honest.outer_binding(),
-        &PallasScalar::from_u32(1), // a challenge of the coordinator's choosing
-        honest.outer_lambda(),
-        &package,
-        &group.group_pubkey,
-        NESTED_POSITION,
-    );
-    assert_eq!(checked.err(), Some(OsstError::ChallengeMismatch));
-
-    // The honest triple is accepted.
-    assert!(InnerSigningParamsV2::<PallasScalar>::from_coordinator_checked::<PallasPoint>(
-        honest.outer_binding(),
+    // The node does the comparison itself, against the triple it derived from
+    // the package and its OWN group key. `from_coordinator_checked` is
+    // deprecated in 0.5.0 and for the right reason: it recomputes everything
+    // using the *supplied* group key, so a substituted `Y` passes it — which
+    // is exactly the mistake M-4 was.
+    let asserted_challenge = PallasScalar::from_u32(1);
+    assert_ne!(
         honest.outer_challenge(),
-        honest.outer_lambda(),
+        &asserted_challenge,
+        "a coordinator-asserted challenge is not the derived one"
+    );
+
+    // And the derivation is a function of the package and the group key, so
+    // two nodes with the same key package agree on it.
+    let again = InnerSigningParamsV2::<PallasScalar>::from_outer::<PallasPoint>(
         &package,
         &group.group_pubkey,
         NESTED_POSITION,
     )
-    .is_ok());
+    .unwrap();
+    assert_eq!(again.outer_challenge(), honest.outer_challenge());
+    assert_eq!(again.outer_binding(), honest.outer_binding());
+    assert_eq!(again.outer_lambda(), honest.outer_lambda());
+
+    // A different group key gives a different challenge — the degree of
+    // freedom M-4 refuses to concede.
+    let other_y = PallasPoint::generator().mul_scalar(&PallasScalar::from_u32(9));
+    let under_other_y = InnerSigningParamsV2::<PallasScalar>::from_outer::<PallasPoint>(
+        &package,
+        &other_y,
+        NESTED_POSITION,
+    )
+    .unwrap();
+    assert_ne!(under_other_y.outer_challenge(), honest.outer_challenge());
 }
 
 /// The request the coordinator actually builds is the one the node accepts —
@@ -711,12 +856,18 @@ fn the_coordinator_request_round_trips_through_the_wire_types() {
     let round1 = inner_round1(session_id);
     let inner_commitments: Vec<InnerCommitments<PallasPoint>> =
         round1.iter().map(|r| r.commitments.clone()).collect();
+    let precommits = precommit_pairs(&round1);
     let nested_commitment =
-        nested::aggregate_inner_commitment_pair::<PallasPoint>(&session_id, &inner_commitments)
+        nested::aggregate_inner_commitment_pair::<PallasPoint>(
+            &session_id,
+            &precommits,
+            &inner_commitments,
+        )
             .unwrap();
 
     let out = crate::client::Round1Output {
         session_id,
+        precommits: wire_precommits(&round1, message, session_id),
         commitments: wire_commitments(&round1, message),
         nested_commitment,
     };
@@ -778,6 +929,7 @@ fn local_signer(
         package.share_at(NESTED_POSITION),
         package.public_shares_at(NESTED_POSITION).unwrap(),
         package.group_pubkey(),
+        INNER_T,
     );
     signer.commit(session_id, message);
     signer
@@ -791,14 +943,19 @@ fn coordinator_request(
     message: &[u8],
     signers: &mut [crate::signing::LocalSigner],
 ) -> SigningRequest {
-    let commitments: Vec<InnerCommitment> = signers
+    let precommits: Vec<crate::signing::InnerPrecommit> = signers
         .iter_mut()
         .map(|s| s.commit(session_id, message))
         .collect();
+    let commitments: Vec<InnerCommitment> = signers
+        .iter()
+        .map(|s| s.reveal(&session_id).unwrap())
+        .collect();
     let nested_commitment =
-        crate::signing::nested_commitment_pair(&session_id, &commitments).unwrap();
+        crate::signing::nested_commitment_pair(&session_id, &precommits, &commitments).unwrap();
     let out = crate::client::Round1Output {
         session_id,
+        precommits,
         commitments,
         nested_commitment,
     };
@@ -827,8 +984,11 @@ fn a_request_naming_another_group_key_is_refused() {
         .collect();
     let honest = coordinator_request(&group, session_id, message, &mut signers);
 
-    // The honest request signs.
-    assert!(signers[0].sign(&honest).is_ok());
+    // The honest request signs. `MemorySpentSessions` is osst's own test
+    // store; the durable one is exercised in `agreement` and in
+    // `a_session_id_cannot_be_signed_twice`.
+    let mut store = nested::MemorySpentSessions::new();
+    assert!(signers[0].sign(&mut store, &honest).is_ok());
 
     // The same request with someone else's Y does not — and is refused before
     // the nonces are consumed, so the substitution cannot be used to burn a
@@ -837,11 +997,11 @@ fn a_request_naming_another_group_key_is_refused() {
     let other_y = PallasPoint::generator().mul_scalar(&PallasScalar::from_u32(9));
     tampered.group_pubkey = point_hex(&other_y);
     assert!(matches!(
-        signers[1].sign(&tampered),
+        signers[1].sign(&mut store, &tampered),
         Err(crate::signing::SigningError::WrongGroupKey)
     ));
     // Still able to sign the honest request afterwards.
-    assert!(signers[1].sign(&honest).is_ok());
+    assert!(signers[1].sign(&mut store, &honest).is_ok());
 }
 
 /// M-15: a re-run of a failed ceremony at the same epoch is a different
@@ -855,6 +1015,8 @@ fn a_rerun_at_the_same_epoch_is_a_different_ceremony() {
         1,
         roster.clone(),
         x25519_secret_from_seed(&seed(1)),
+        crate::identity::NodeIdentity::from_seed_for_test(seed(1))
+            .ceremony_identity_secret(),
         EPOCH,
         [0xa1u8; 32],
         INNER_T,
@@ -865,6 +1027,8 @@ fn a_rerun_at_the_same_epoch_is_a_different_ceremony() {
         1,
         roster.clone(),
         x25519_secret_from_seed(&seed(1)),
+        crate::identity::NodeIdentity::from_seed_for_test(seed(1))
+            .ceremony_identity_secret(),
         EPOCH,
         [0xb2u8; 32],
         INNER_T,
@@ -878,6 +1042,8 @@ fn a_rerun_at_the_same_epoch_is_a_different_ceremony() {
         2,
         roster,
         x25519_secret_from_seed(&seed(2)),
+        crate::identity::NodeIdentity::from_seed_for_test(seed(2))
+            .ceremony_identity_secret(),
         EPOCH,
         [0xa1u8; 32],
         INNER_T,
@@ -901,6 +1067,8 @@ fn ceremony_for(index: u32, roster: &Arc<Roster>) -> DkgCeremony {
         index,
         roster.clone(),
         x25519_secret_from_seed(&seed(index)),
+        crate::identity::NodeIdentity::from_seed_for_test(seed(index))
+            .ceremony_identity_secret(),
         EPOCH,
         CEREMONY_NONCE,
         INNER_T,
@@ -1034,6 +1202,7 @@ fn service(
         package.share_at(NESTED_POSITION),
         package.public_shares_at(NESTED_POSITION).unwrap(),
         package.group_pubkey(),
+        INNER_T,
     );
     let service = crate::signing::SigningService::new(
         signer,
@@ -1059,12 +1228,16 @@ async fn a_session_id_cannot_be_signed_twice() {
         .collect();
     let req = coordinator_request(&group, session_id, message, &mut signers);
 
-    // The node has to hold nonces for this session, which is what round 1 is.
+    // The node has to hold nonces for this session, which is what round 0 is.
     service.start_round1(session_id, message).await.unwrap();
-    // Round 1 already sampled nonces over the coordinator's set; rebuild the
-    // request over the node's own published commitment.
-    let commitments = service.round1.contributions(&session_id).await;
-    assert_eq!(commitments.len(), 1);
+    assert_eq!(
+        service.round0.contributions(&session_id).await.len(),
+        1,
+        "our own precommitment is published"
+    );
+    // The reveal is held back until the precommit round closes: one node in
+    // process against a threshold of two, so nothing is revealed yet.
+    assert!(service.round1.contributions(&session_id).await.is_empty());
 
     // A second round 2 for the same session is refused before anything else.
     service.spent.mark_spent(&session_id).unwrap();

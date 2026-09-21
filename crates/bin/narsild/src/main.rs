@@ -170,11 +170,22 @@ fn same_index(sender: u32, claimed: u32) -> Result<(), Response> {
 /// between nodes that completed a ceremony and one that did not. The complaint
 /// itself is public — it names a dealer and a reason, not a share — so it is
 /// broadcast.
-fn report_dkg(app: &AppState, e: dkg::DkgError) -> Response {
-    if let dkg::DkgError::Aborted(ref complaint) = e {
-        app.peers.broadcast("/dkg/complaint", complaint);
-    }
+fn report_dkg(_app: &AppState, e: dkg::DkgError) -> Response {
     err(e)
+}
+
+/// Publish a complaint this node raised, if it raised one.
+///
+/// A complaint that stays on the node that raised it is worse than useless:
+/// the others finalize, write key packages, and the group ends up split
+/// between nodes that completed a ceremony and one that did not. The complaint
+/// carries public evidence — a round-1 package whose proof of knowledge does
+/// not verify — so publishing it discloses nothing and every recipient reaches
+/// the verdict itself.
+async fn publish_complaint(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) {
+    if let Some(complaint) = guard.as_mut().and_then(|c| c.take_complaint()) {
+        app.peers.broadcast("/dkg/complaint", &complaint);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,24 +218,49 @@ async fn handle_round1(
         Ok(m) => m,
         Err(_) => return err("message_hex is not hex"),
     };
-    let commitment = match app.signing.start_round1(req.session_id, &message).await {
+    let precommit = match app.signing.start_round1(req.session_id, &message).await {
         Ok(c) => c,
         Err(e) => return err(e),
     };
     let (collected, threshold, _) = app
         .signing
-        .round1
+        .round0
         .status(&req.session_id)
         .await
         .unwrap_or((1, 0, None));
     Json(Round1Response {
-        holder_index: commitment.holder_index,
-        hiding: commitment.hiding,
-        binding: commitment.binding,
+        holder_index: precommit.holder_index,
+        precommit: precommit.precommit,
         collected,
         threshold,
     })
     .into_response()
+}
+
+async fn handle_precommit(
+    State(app): State<AppState>,
+    Json(envelope): Json<Envelope>,
+) -> Response {
+    let (sender, precommit): (u32, signing::InnerPrecommit) =
+        match authed(&app, "/sign/precommit", &envelope) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    if let Err(r) = same_index(sender, precommit.holder_index) {
+        return r;
+    }
+    let session_id = precommit.session_id;
+    let result = match app.signing.receive_precommit(precommit).await {
+        Ok(r) => r,
+        Err(e) => return err(e),
+    };
+    let (collected, threshold, _) = app
+        .signing
+        .round0
+        .status(&session_id)
+        .await
+        .unwrap_or((0, 0, None));
+    Json(accumulate_response(&result, collected, threshold)).into_response()
 }
 
 async fn handle_commitment(
@@ -258,6 +294,13 @@ async fn handle_status(
     Json(req): Json<StatusRequest>,
 ) -> Response {
     let commitments = app.signing.round1.contributions(&req.session_id).await;
+    let precommits = app.signing.round0.contributions(&req.session_id).await;
+    let (r0_collected, r0_threshold, _) = app
+        .signing
+        .round0
+        .status(&req.session_id)
+        .await
+        .unwrap_or((0, 0, None));
     let (r1_collected, r1_threshold, _) = app
         .signing
         .round1
@@ -274,7 +317,8 @@ async fn handle_status(
 
     // The nested position's outer commitment pair, so a coordinator does not
     // have to reimplement the aggregation to build the outer package.
-    let nested_commitment = signing::nested_commitment_pair(&req.session_id, &commitments)
+    let nested_commitment =
+        signing::nested_commitment_pair(&req.session_id, &precommits, &commitments)
         .ok()
         .map(|(d, e)| NestedCommitment {
             hiding: codec::point_hex(&d),
@@ -284,6 +328,12 @@ async fn handle_status(
     Json(SigningStatusResponse {
         session_id: hex::encode(req.session_id),
         nested_index: app.nested_position,
+        precommits,
+        round0: RoundStatus {
+            collected: r0_collected,
+            threshold: r0_threshold,
+            ready: r0_collected >= r0_threshold,
+        },
         round1: RoundStatus {
             collected: r1_collected,
             threshold: r1_threshold,
@@ -405,6 +455,7 @@ async fn new_ceremony(
         app.holder_index,
         app.roster.clone(),
         app.identity.x25519_secret(),
+        app.identity.ceremony_identity_secret(),
         epoch,
         ceremony_nonce,
         app.inner_threshold,
@@ -447,9 +498,7 @@ async fn run_round2(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) {
         Ok(m) => m,
         Err(e) => {
             tracing::error!("DKG round 2: {}", e);
-            if let dkg::DkgError::Aborted(ref c) = e {
-                app.peers.broadcast("/dkg/complaint", c);
-            }
+            publish_complaint(app, guard).await;
             return;
         }
     };
@@ -468,9 +517,6 @@ async fn run_round2(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) {
     if let Some(msg) = ours {
         if let Err(e) = ceremony.receive_round2(&msg) {
             tracing::error!("DKG round 2 (own packages): {}", e);
-            if let dkg::DkgError::Aborted(ref c) = e {
-                app.peers.broadcast("/dkg/complaint", c);
-            }
         }
     }
 }
@@ -776,7 +822,12 @@ async fn handle_dkg_round1(
     let mut guard = app.dkg_ceremony.lock().await;
     let complete = match guard.as_mut().map(|c| c.receive_round1(&msg)) {
         Some(Ok(c)) => c,
-        Some(Err(e)) => return report_dkg(&app, e),
+        Some(Err(e)) => {
+            // A forged proof of knowledge produces a complaint every other
+            // node can check for itself; it has to reach them.
+            publish_complaint(&app, &mut guard).await;
+            return report_dkg(&app, e);
+        }
         None => return err_code(UNAVAILABLE, "no DKG ceremony"),
     };
 
@@ -853,7 +904,7 @@ async fn handle_dkg_echo(
     State(app): State<AppState>,
     Json(envelope): Json<Envelope>,
 ) -> Response {
-    let (sender, echo): (u32, agreement::DkgEcho) = match authed(&app, "/dkg/echo", &envelope) {
+    let (sender, echo): (u32, dkg::DkgEcho) = match authed(&app, "/dkg/echo", &envelope) {
         Ok(v) => v,
         Err(r) => return r,
     };
@@ -893,12 +944,12 @@ async fn handle_dkg_complaint(
     State(app): State<AppState>,
     Json(envelope): Json<Envelope>,
 ) -> Response {
-    let (sender, complaint): (u32, dkg::Complaint) =
+    let (sender, complaint): (u32, dkg::ComplaintMsg) =
         match authed(&app, "/dkg/complaint", &envelope) {
             Ok(v) => v,
             Err(r) => return r,
         };
-    if let Err(r) = same_index(sender, complaint.complainant_index) {
+    if let Err(r) = same_index(sender, complaint.accuser_index) {
         return r;
     }
     let mut guard = app.dkg_ceremony.lock().await;
@@ -957,7 +1008,10 @@ async fn handle_dkg_status(State(app): State<AppState>) -> Response {
                 holder_index: Some(c.holder_index),
                 phase,
                 round1_digest: c.round1_digest().map(hex::encode),
-                aborted_against_dealer: c.abort_reason().map(|x| x.dealer_index),
+                aborted_against_dealer: c.abort_reason().and_then(|x| match x {
+                    dkg::AbortReason::Dealer(i) | dkg::AbortReason::SealedPackage(i) => Some(*i),
+                    dkg::AbortReason::EchoMismatch(_) => None,
+                }),
                 result: c.result.as_ref().map(|r| r.public_view()),
             }
         }
@@ -1042,11 +1096,12 @@ struct Cli {
     #[arg(long, default_value = "./narsild-data")]
     data_dir: PathBuf,
 
-    /// A roster entry: `index=url=x25519_pubkey_hex=ed25519_pubkey_hex`.
+    /// A roster entry:
+    /// `index=url=x25519_pubkey_hex=ed25519_pubkey_hex=identity_pubkey_hex`.
     /// Repeat for every member of the group, this node included. Every node
     /// must be given the same set: its hash goes into the DKG prologue, the
     /// signing context and every request signature.
-    #[arg(long = "peer", value_name = "INDEX=URL=X25519=ED25519")]
+    #[arg(long = "peer", value_name = "INDEX=URL=X25519=ED25519=IDENTITY")]
     peers: Vec<String>,
 
     /// Inner FROST threshold.
@@ -1119,9 +1174,12 @@ async fn main() {
 
     if cli.print_identity {
         println!(
-            "{}={}",
+            "{}={}={}",
             hex::encode(identity.x25519_public()),
-            hex::encode(identity.ed25519_public())
+            hex::encode(identity.ed25519_public()),
+            hex::encode(osst::curve::OsstPoint::compress(
+                &identity.ceremony_identity_public()
+            ))
         );
         return;
     }
@@ -1152,7 +1210,8 @@ async fn main() {
         Err(e) => {
             eprintln!("bad roster: {e}");
                 eprintln!(
-                "expected --peer INDEX=URL=X25519_PUBKEY_HEX=ED25519_PUBKEY_HEX, \
+                "expected \
+                 --peer INDEX=URL=X25519_PUBKEY_HEX=ED25519_PUBKEY_HEX=IDENTITY_PUBKEY_HEX, \
                  once per member"
             );
             std::process::exit(1);
@@ -1165,7 +1224,10 @@ async fn main() {
     match roster.get(cli.index) {
         Ok(me)
             if me.x25519_pub == identity.x25519_public()
-                && me.ed25519_pub == identity.ed25519_public() => {}
+                && me.ed25519_pub == identity.ed25519_public()
+                && me.identity_pub.as_slice()
+                    == osst::curve::OsstPoint::compress(&identity.ceremony_identity_public())
+                        .as_ref() => {}
         Ok(me) => {
             eprintln!(
                 "roster entry for index {} carries keys {}={}, but this node's identity \
@@ -1246,6 +1308,7 @@ async fn main() {
         share,
         public_shares,
         group_pubkey,
+        cli.threshold,
     );
     let spent = match agreement::FileSpentSessions::open(&cli.data_dir) {
         Ok(s) => Arc::new(s),
@@ -1293,6 +1356,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/sign/round1", axum::routing::post(handle_round1))
+        .route("/sign/precommit", axum::routing::post(handle_precommit))
         .route("/sign/commitment", axum::routing::post(handle_commitment))
         .route("/sign/status", axum::routing::post(handle_status))
         .route("/sign/round2", axum::routing::post(handle_round2))

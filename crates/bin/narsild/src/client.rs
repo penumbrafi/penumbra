@@ -91,6 +91,8 @@ pub struct OuterRound {
 /// What round 1 produced.
 pub struct Round1Output {
     pub session_id: [u8; 32],
+    /// The round-0 precommitments the reveals were checked against.
+    pub precommits: Vec<crate::signing::InnerPrecommit>,
     pub commitments: Vec<InnerCommitment>,
     /// `(D_nested, E_nested)` — the nested position's entry in the outer
     /// package.
@@ -202,11 +204,19 @@ impl NarsilClient {
                     .get("commitments")
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
                     .unwrap_or_default();
-                let nested_commitment =
-                    crate::signing::nested_commitment_pair(&session_id, &commitments)
-                        .map_err(|e| ClientError::BadResponse(e.to_string()))?;
+                let precommits: Vec<crate::signing::InnerPrecommit> = resp
+                    .get("precommits")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let nested_commitment = crate::signing::nested_commitment_pair(
+                    &session_id,
+                    &precommits,
+                    &commitments,
+                )
+                .map_err(|e| ClientError::BadResponse(e.to_string()))?;
                 return Ok(Round1Output {
                     session_id,
+                    precommits,
                     commitments,
                     nested_commitment,
                 });
@@ -284,6 +294,14 @@ pub fn build_request(
                 index: c.index,
                 hiding: point_hex(&c.hiding),
                 binding: point_hex(&c.binding),
+            })
+            .collect(),
+        inner_precommits: round1
+            .precommits
+            .iter()
+            .map(|p| crate::signing::PrecommitEntry {
+                holder_index: p.holder_index,
+                precommit: p.precommit.clone(),
             })
             .collect(),
         inner_commitments: round1.commitments.clone(),

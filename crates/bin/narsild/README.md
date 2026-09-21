@@ -17,8 +17,8 @@ production system.
   repo-wide `1.83`).
 - Cryptography comes from the `osst` crate (nested FROST with OSST
   identification, DKG and proactive resharing), on the Pallas curve — the curve
-  Zcash Orchard uses for spend authorization. Pinned to **osst 0.4.0**
-  (`penumbrafi/frostito` rev `bf30136`) with features
+  Zcash Orchard uses for spend authorization. Pinned to **osst 0.5.0**
+  (`penumbrafi/frostito` rev `f4f1a1a`) with features
   `std,pallas,sealed`.
 - DKG round 2 is sealed and point-to-point; signing is nested FROST **v2** and
   is bound to an epoch and to the roster. Share material is persisted to the
@@ -90,12 +90,25 @@ Each node has one identity seed, generated at first start into
 - an **X25519** key, via `osst::sealed::x25519_secret_from_seed`, which seals
   round-2 sub-shares to this node;
 - an **ed25519** key, via HKDF-SHA256 under a distinct `info` string, which
-  signs this node's requests to its peers.
+  signs this node's requests to its peers;
+- an **identity key on the ceremony curve** (Pallas), via HKDF-SHA256 under a
+  third `info` string and a wide reduction, which signs DKG complaints.
 
-Neither is the seed and neither is computable from the other.
-`--print-identity` prints both, in the form a peer puts in its roster entry.
+None is the seed and none is computable from the others.
+`--print-identity` prints all three, in the form a peer puts in its roster
+entry.
 
-The roster is configuration: `--peer INDEX=URL=X25519_PUBKEY_HEX=ED25519_PUBKEY_HEX`,
+The third key is osst's requirement, not narsild's taste: `osst::dkg::Complaint`
+is signed with a Schnorr key on the curve the ceremony already uses — the
+accuser's verification share does not exist yet during the DKG that produces
+it, so a long-term key is needed either way, and a scalar on the ceremony curve
+costs no new dependency. osst verifies a complaint against a key **the caller
+supplies from the roster**, and says plainly that "passing a key the complaint
+itself supplied verifies nothing". So the identity keys are in the roster, and
+the roster hash — which is the manifest and the ceremony id — covers them.
+
+The roster is configuration:
+`--peer INDEX=URL=X25519_PUBKEY_HEX=ED25519_PUBKEY_HEX=IDENTITY_PUBKEY_HEX`,
 once per member, identical on every node. Its fingerprint is SHA-256 over the sorted
 `(index, pubkey, url)` triples, each field length-prefixed. `osst`'s own
 `SealedRoster` carries only `(index, pubkey)` — a transport is out of scope for
@@ -204,12 +217,48 @@ can spend what the group holds. So:
 ### The echo round
 
 After round 1 closes, every node broadcasts the canonical digest of the
-round-1 set it accepted and refuses to produce a single sealed round-2 package
-until every member's digest matches its own. Sealing binds a sub-share to the
-commitment *as delivered to that recipient*; nothing binds that commitment to
-a single value every recipient saw, so a dealer can send `C_A` to Alice and
-`C_B` to Bob, pass every per-recipient check, and split the group. The echo is
-what sees it, and a mismatch aborts naming the members that differ.
+round-1 set it accepted and refuses to produce or open a single sealed round-2
+package until every member's digest matches its own. Sealing binds a sub-share
+to the commitment *as delivered to that recipient*; nothing binds that
+commitment to a single value every recipient saw, so a dealer can send `C_A` to
+Alice and `C_B` to Bob, pass every per-recipient check, and split the group.
+The echo is what sees it, and a mismatch aborts naming the members that differ.
+
+The digest is osst's (`DkgState::agreed_round1` → `AgreedRound1::digest`), one
+per outer coefficient, and so is the comparison: `AgreedRound1::confirm` per
+member, so a mismatch can name them, then `confirm_all` over every member's
+echo, which is also what decides that there are enough echoes. What matters more than the digest is
+where the commitments come from afterwards: round 2 goes through
+`sealed::open_subshare_agreed` and `Aggregator::from_agreed`, which look a
+dealer's commitment up in the agreed set instead of taking the one that arrived
+alongside the sub-share — the one a malicious dealer controls.
+
+### Complaints
+
+A complaint is `osst::dkg::Complaint`: signed by the accuser's ceremony
+identity key from the roster, bound to `(epoch, session_id, round)`, carrying
+evidence, and adjudicated by every node for itself. narsild's part is the wire
+codec, the roster lookup, the re-broadcast on first sight, and counting an
+`Unfounded` verdict against the accuser rather than the accused.
+
+Only one kind of evidence is raised today. A forged proof of knowledge is
+fully transferable: the round-1 package is public, so anyone re-runs the check.
+A bad sub-share is not raised at all, because `open_subshare` discards the
+plaintext when the Feldman check fails and there is no lower-level open — so a
+round-2 failure aborts this node and is logged, rather than producing an
+accusation nobody can check. Raising it properly needs an osst entry point that
+hands the recipient the plaintext it has just rejected.
+
+### The inner signing round is commit–reveal
+
+Three rounds, not two: precommit (`/sign/precommit`), reveal
+(`/sign/commitment`), sign (`/sign/round2`). A holder publishes
+`H(its commitments)` first and its commitments only once the precommit round
+has closed, and a reveal that does not match a precommitment this node already
+holds is refused. osst 0.5.0 checks the same thing on the signing side
+(`aggregate_inner_commitment_pair` takes the precommitments), so the round is
+enforced at both ends rather than left to convention: a holder that waits to
+see the others' commitments before choosing its own is choosing `ΣD`.
 
 ### Nonce state is durable
 
@@ -234,13 +283,26 @@ and a session id already in it does not open again.
   package that overtakes its dealer's round-1 broadcast is dropped and the
   ceremony stalls until it is restarted. Pre-existing; a retry queue is the
   obvious fix and is not here.
-- Round-2 complaints are not publicly verifiable. osst 0.4.0's
-  `open_subshare` discards the plaintext on a failed check, so a complainant
-  cannot publish the sub-share that would let every node re-run the Feldman
-  check itself. Complaints of that class therefore need `--threshold`
-  independent accusers against one dealer before the ceremony aborts. The
-  adjudication path for a justified complaint is written and tested; osst
-  0.5.0's plaintext-returning open is a change to the producing side only.
+- **A round-2 failure splits the group.** narsild cannot build osst's
+  `BadSubShare` evidence — `open_subshare` discards the plaintext when the
+  Feldman check fails — so a node that receives a bad sealed package aborts and
+  says so only in its own log. The other members have everything they need:
+  they finalize and write key packages, and the group ends up split between
+  nodes that completed a ceremony and one that did not. That is the outcome
+  M-6 is about, and it is the top open item here. Two things fix it, and both
+  are wanted: an osst entry point that hands the recipient the plaintext it has
+  just rejected, so the complaint becomes transferable; and a **completion
+  echo** — broadcast `H(coeff_commitments ‖ verification_shares)` after
+  `finalize()` and `save()` only on `n` matching, which would also make the
+  "every node derives the same public data" assertion a runtime check instead
+  of something only an in-process test exercises.
+- **Out-of-order messages are rejected, not buffered.** An echo that arrives
+  before the last dealer's round 1, a sealed round-2 package that arrives
+  before this node has confirmed the echo round, a reveal that overtakes its
+  own precommitment: each is refused and dropped, and the ceremony or session
+  stalls until it is restarted. The delivery layer is fire-and-forget with no
+  ordering or retry, and the new gates give that three more places to bite. A
+  small hold-and-replay buffer per ceremony is the fix.
 - There is no rate limiting beyond the session cap and the 1 MiB body limit.
 
 ## Design
@@ -336,8 +398,9 @@ All endpoints are JSON.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/sign/round1` | Start a signing session; returns this node's nonce commitments |
-| POST | `/sign/commitment` | Peer submits its round-1 nonce commitment |
+| POST | `/sign/round1` | Start a signing session; returns this node's round-0 precommitment |
+| POST | `/sign/precommit` | Peer submits its round-0 precommitment |
+| POST | `/sign/commitment` | Peer reveals its round-1 nonce commitments |
 | POST | `/sign/status` | Poll progress; carries the nested commitment pair and `z_nested` |
 | POST | `/sign/round2` | Publish the outer round; returns this node's share |
 | POST | `/sign/share` | Peer submits its round-2 signature share |
@@ -365,9 +428,9 @@ narsild \
   --bind 127.0.0.1:9200 \
   --data-dir /var/lib/narsild \
   --index 1 \
-  --peer 1=http://val1:9200=<x25519-1>=<ed25519-1> \
-  --peer 2=http://val2:9200=<x25519-2>=<ed25519-2> \
-  --peer 3=http://val3:9200=<x25519-3>=<ed25519-3> \
+  --peer 1=http://val1:9200=<x25519-1>=<ed25519-1>=<identity-1> \
+  --peer 2=http://val2:9200=<x25519-2>=<ed25519-2>=<identity-2> \
+  --peer 3=http://val3:9200=<x25519-3>=<ed25519-3>=<identity-3> \
   --threshold 2 \
   --outer-threshold 2 \
   --nested-position 1
@@ -378,14 +441,14 @@ narsild \
 | `--bind` | `127.0.0.1:9200` | Listen address |
 | `--index` | – | This node's 1-indexed holder index; must be on the roster |
 | `--data-dir` | `./narsild-data` | Identity and key package |
-| `--peer` | – | `INDEX=URL=X25519_PUBKEY_HEX=ED25519_PUBKEY_HEX`, once per member |
+| `--peer` | – | `INDEX=URL=X25519_PUBKEY_HEX=ED25519_PUBKEY_HEX=IDENTITY_PUBKEY_HEX`, once per member |
 | `--threshold` | `3` | Inner FROST threshold |
 | `--outer-threshold` | – | Number of outer polynomial coefficients; ≥ 2 unless `--dev-single-signer` |
 | `--dev-single-signer` | – | Permit `--outer-threshold 1`. Development only |
 | `--allow-rotation` | – | Consent to a DKG that replaces this node's key package |
 | `--dev-allow-message-digests` | – | File of approved message digests; without it this node signs nothing |
 | `--nested-position` | `1` | The nested position's index in the outer signing set |
-| `--print-identity` | – | Print `x25519=ed25519` and exit |
+| `--print-identity` | – | Print `x25519=ed25519=identity` and exit |
 
 Build and test from inside this directory so that the crate's own
 `rust-toolchain.toml` applies:

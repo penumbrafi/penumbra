@@ -37,7 +37,9 @@
 //! so a signature made under one roster is not valid under another.
 
 use ed25519_dalek::VerifyingKey;
+use osst::curve::OsstPoint;
 use osst::sealed::SealedRoster;
+use pasta_curves::pallas::Point as PallasPoint;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -63,6 +65,10 @@ pub struct Peer {
     pub x25519_pub: [u8; 32],
     /// That node's ed25519 public key — verifies its signed requests.
     pub ed25519_pub: [u8; 32],
+    /// That node's identity public key on the ceremony curve — verifies its
+    /// DKG complaints (`osst::dkg::Complaint`), whose signature is a Schnorr
+    /// signature on that curve. Canonical compressed.
+    pub identity_pub: [u8; 32],
 }
 
 /// Errors from building or reading a roster.
@@ -78,13 +84,17 @@ pub enum RosterError {
     DuplicateKey(u32, u32),
     #[error("duplicate ed25519 public key for indices {0} and {1}")]
     DuplicateSigningKey(u32, u32),
+    #[error("duplicate ceremony identity key for indices {0} and {1}")]
+    DuplicateIdentityKey(u32, u32),
+    #[error("the ceremony identity key for index {0} is not a canonical point")]
+    BadIdentityKey(u32),
     #[error("index {0} is not on the roster")]
     Unknown(u32),
     #[error("the ed25519 key for index {0} is not a valid point")]
     BadSigningKey(u32),
     #[error(
         "malformed peer specification {0:?}: expected \
-         index=url=x25519_pubkey_hex=ed25519_pubkey_hex"
+         index=url=x25519_pubkey_hex=ed25519_pubkey_hex=identity_pubkey_hex"
     )]
     Malformed(String),
 }
@@ -125,12 +135,19 @@ impl Roster {
                         members[j].index,
                     ));
                 }
+                if members[i].identity_pub == members[j].identity_pub {
+                    return Err(RosterError::DuplicateIdentityKey(
+                        members[i].index,
+                        members[j].index,
+                    ));
+                }
             }
         }
         Ok(Self { members })
     }
 
-    /// Parse a roster from `index=url=x25519_pubkey_hex=ed25519_pubkey_hex`
+    /// Parse a roster from
+    /// `index=url=x25519_pubkey_hex=ed25519_pubkey_hex=identity_pubkey_hex`
     /// specifications.
     ///
     /// The two keys are peeled off the *end*, not taken as fields 3 and 4 of a
@@ -140,14 +157,15 @@ impl Roster {
     pub fn parse(specs: &[String]) -> Result<Self, RosterError> {
         let mut members = Vec::with_capacity(specs.len());
         for spec in specs {
-            let tail: Vec<&str> = spec.rsplitn(3, '=').collect();
-            if tail.len() != 3 {
+            let tail: Vec<&str> = spec.rsplitn(4, '=').collect();
+            if tail.len() != 4 {
                 return Err(RosterError::Malformed(spec.clone()));
             }
             // rsplitn yields right-to-left.
-            let ed25519_hex = tail[0];
-            let x25519_hex = tail[1];
-            let head = tail[2];
+            let identity_hex = tail[0];
+            let ed25519_hex = tail[1];
+            let x25519_hex = tail[2];
+            let head = tail[3];
 
             let (index_str, url) = head
                 .split_once('=')
@@ -163,11 +181,14 @@ impl Roster {
             let x25519_pub = key32(x25519_hex).ok_or_else(|| RosterError::Malformed(spec.clone()))?;
             let ed25519_pub =
                 key32(ed25519_hex).ok_or_else(|| RosterError::Malformed(spec.clone()))?;
+            let identity_pub =
+                key32(identity_hex).ok_or_else(|| RosterError::Malformed(spec.clone()))?;
             members.push(Peer {
                 index,
                 url,
                 x25519_pub,
                 ed25519_pub,
+                identity_pub,
             });
         }
         Self::new(members)
@@ -208,10 +229,23 @@ impl Roster {
             h.update(m.index.to_le_bytes());
             h.update(m.x25519_pub);
             h.update(m.ed25519_pub);
+            h.update(m.identity_pub);
             h.update((m.url.len() as u64).to_le_bytes());
             h.update(m.url.as_bytes());
         }
         h.finalize().into()
+    }
+
+    /// The ceremony-curve identity key of one member, for checking its DKG
+    /// complaints.
+    ///
+    /// This must come from the roster and nowhere else: osst's
+    /// `Complaint::verify` takes the key as an argument precisely because it
+    /// does not own the roster, and "passing a key the complaint itself
+    /// supplied verifies nothing".
+    pub fn identity_key(&self, index: u32) -> Result<PallasPoint, RosterError> {
+        let peer = self.get(index)?;
+        PallasPoint::decompress(&peer.identity_pub).ok_or(RosterError::BadIdentityKey(index))
     }
 
     /// The ed25519 verifying key of one member, for checking its signed
@@ -272,6 +306,7 @@ mod tests {
             url: url.to_string(),
             x25519_pub: [key; 32],
             ed25519_pub: [key.wrapping_add(0x80); 32],
+            identity_pub: [key.wrapping_add(0x40); 32],
         }
     }
 
@@ -310,6 +345,13 @@ mod tests {
         let mut other_signing_key = three();
         other_signing_key[1].ed25519_pub = [0x66; 32];
         assert_ne!(base, Roster::new(other_signing_key).unwrap().hash());
+
+        // The complaint identity key is in the manifest too: osst verifies a
+        // complaint against a key the roster names, so the roster has to name
+        // it and the ceremony has to be bound to that naming.
+        let mut other_identity = three();
+        other_identity[1].identity_pub = [0x55; 32];
+        assert_ne!(base, Roster::new(other_identity).unwrap().hash());
 
         let mut other_index = three();
         other_index[2].index = 4;
@@ -395,14 +437,16 @@ mod tests {
     fn peers_parse_from_index_url_two_key_specs() {
         let specs = vec![
             format!(
-                "1=http://a:9200/={}={}",
+                "1=http://a:9200/={}={}={}",
                 hex::encode([1u8; 32]),
-                hex::encode([0x81u8; 32])
+                hex::encode([0x81u8; 32]),
+                hex::encode([0x41u8; 32])
             ),
             format!(
-                "2=http://b:9200={}={}",
+                "2=http://b:9200={}={}={}",
                 hex::encode([2u8; 32]),
-                hex::encode([0x82u8; 32])
+                hex::encode([0x82u8; 32]),
+                hex::encode([0x42u8; 32])
             ),
         ];
         let r = Roster::parse(&specs).unwrap();
@@ -413,9 +457,14 @@ mod tests {
         // The old three-field form no longer parses: a roster without signing
         // keys cannot authenticate anything, and half-understanding it would
         // put a key-shaped URL fragment in the manifest.
-        assert!(Roster::parse(&[format!("1=http://a={}", hex::encode([1u8; 32]))]).is_err());
+        assert!(Roster::parse(&[format!(
+            "1=http://a={}={}",
+            hex::encode([1u8; 32]),
+            hex::encode([0x81u8; 32])
+        )])
+        .is_err());
         assert!(Roster::parse(&["1=http://a".to_string()]).is_err());
-        assert!(Roster::parse(&["1=http://a=zz=ww".to_string()]).is_err());
+        assert!(Roster::parse(&["1=http://a=zz=ww=vv".to_string()]).is_err());
     }
 
     /// A URL with an `=` in it survives parsing intact — the keys are peeled
@@ -423,9 +472,10 @@ mod tests {
     #[test]
     fn a_url_containing_an_equals_sign_is_not_truncated() {
         let spec = format!(
-            "3=http://h:9200/p?a=b={}={}",
+            "3=http://h:9200/p?a=b={}={}={}",
             hex::encode([3u8; 32]),
-            hex::encode([0x83u8; 32])
+            hex::encode([0x83u8; 32]),
+            hex::encode([0x43u8; 32])
         );
         let r = Roster::parse(&[spec]).unwrap();
         assert_eq!(r.get(3).unwrap().url, "http://h:9200/p?a=b");

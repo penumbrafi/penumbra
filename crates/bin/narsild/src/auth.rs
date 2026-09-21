@@ -383,6 +383,12 @@ mod tests {
                         url: format!("http://node{i}:9200"),
                         x25519_pub: ident(i).x25519_public(),
                         ed25519_pub: ident(i).ed25519_public(),
+                        identity_pub: osst::curve::OsstPoint::compress(
+                            &ident(i).ceremony_identity_public(),
+                        )
+                        .as_ref()
+                        .try_into()
+                        .unwrap(),
                     })
                     .collect(),
             )
