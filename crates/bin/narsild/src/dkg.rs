@@ -572,8 +572,12 @@ pub enum DkgError {
          re-run the ceremony without that member."
     )]
     ExcludedDealer(u32),
-    #[error("complaint from member {0} arrived before this node agreed on round 1")]
-    ComplaintBeforeAgreement(u32),
+    #[error(
+        "complaint from member {0} names a commitment this node has not agreed on: \
+         either round 1 is not confirmed here yet, or the accuser is looking at a \
+         different ceremony. Nothing sound to check it against, so it is dropped."
+    )]
+    UnknownAgreedCommitment(u32),
     #[error("round 1 is not complete: {got}/{need} dealers have committed")]
     Round1Incomplete { got: usize, need: usize },
     #[error("round 2 is not complete for coefficient {coeff_index}: {got}/{need}")]
@@ -1484,10 +1488,12 @@ impl DkgCeremony {
     ///
     /// # Errors
     ///
-    /// [`DkgError::ComplaintBeforeAgreement`] for a round-2 complaint that
-    /// arrives before this node has confirmed round 1: there is nothing sound
-    /// to check it against yet. It is dropped rather than buffered, which is
-    /// the same "no ordering or retry" this crate has everywhere else.
+    /// [`DkgError::UnknownAgreedCommitment`] for a round-2 complaint whose
+    /// evidence names a commitment this node has not agreed on — round 1 is
+    /// not confirmed here yet, or the accuser is looking at a different
+    /// ceremony. Either way there is nothing sound to check it against, and it
+    /// is dropped rather than buffered, which is the same "no ordering or
+    /// retry" this crate has everywhere else.
     pub fn receive_complaint(&mut self, msg: &ComplaintMsg) -> Result<bool, DkgError> {
         let complaint = msg.decode(self.inner_t)?;
         self.roster.get(complaint.accuser_index)?;
@@ -1497,7 +1503,7 @@ impl DkgCeremony {
             dkg::ComplaintEvidence::ForgedProofOfKnowledge { .. } => None,
             dkg::ComplaintEvidence::BadSubShare { evidence } => Some(
                 self.agreed_for(evidence.dealer_index, &evidence.agreed_digest)
-                    .ok_or(DkgError::ComplaintBeforeAgreement(complaint.accuser_index))?,
+                    .ok_or(DkgError::UnknownAgreedCommitment(complaint.accuser_index))?,
             ),
         };
 

@@ -65,17 +65,23 @@ Now:
   the Noise prologue) and the dealer's Feldman commitment (a digest inside the
   sealed plaintext, so a sub-share and a commitment cannot be sourced
   separately).
-- `open_subshare` runs the Feldman check itself and names the dealer on
-  failure. A failure is a complaint; the complaint is broadcast, and **any
-  complaint aborts the ceremony on every node**. A complaint that stayed with
-  the node that raised it would be worse than useless: the others would
-  finalize and write key packages for a group one member is not in. A
-  complaint carries the ceremony it belongs to, the commitment it is about and
-  its evidence, is re-broadcast on receipt, and is adjudicated by every node
-  from data it holds: evidence that checks out convicts the dealer, evidence
-  that contradicts the accusation flags the accuser, and a complaint nobody
-  else can check needs `--threshold` independent accusers before it stops
-  anything.
+- `open_subshare_agreed_with_evidence` runs the Feldman check itself, against
+  the commitment in the *agreed* round-1 set, and on failure hands back the
+  plaintext it rejected. That becomes a complaint, which is broadcast: a
+  complaint that stayed with the node that raised it would be worse than
+  useless, because the others would finalize and write key packages for a group
+  one member is not in. A complaint carries the ceremony it belongs to, names
+  the commitment it is about, and is adjudicated by every node from data it
+  holds — evidence that checks out convicts the dealer, evidence that
+  contradicts the accusation flags the accuser.
+
+  **How far a verdict carries depends on the evidence.** A forged proof of
+  knowledge is public data: one upheld complaint aborts the ceremony on every
+  node. A bad sub-share is checkable but not attributable — Noise_K
+  authenticates a dealer to its recipient and to nobody else, so a lying
+  recipient can fabricate a scalar that fails the same check — so
+  `osst::dkg::ComplaintTally` requires `--threshold` independent accusers
+  before a dealer is disqualified, and a lone complaint is recorded and logged.
 
 ### The roster, and what it authenticates
 
@@ -165,8 +171,10 @@ with the seen nonces held in memory *and* appended to
 `<data-dir>/seen-nonces.log` with `fsync` so a restart does not reopen the
 window. A signature that does not verify does not consume a nonce. Handlers
 additionally require the envelope's sender to be the index the message claims
-for itself, so a member cannot post a round-1 package, a complaint or a share
-"from" another member.
+for itself, so a member cannot post a round-1 package or a share "from" another
+member. `/dkg/complaint` is the one exception, and deliberately: a complaint
+carries its own Schnorr signature under the accuser's roster identity key, and
+requiring sender == accuser would make re-broadcasting one impossible.
 
 The read-only endpoints — `/health`, `/sign/status`, `/dkg/status` — are
 unauthenticated, and carry only public data. That is a property of
@@ -241,13 +249,32 @@ evidence, and adjudicated by every node for itself. narsild's part is the wire
 codec, the roster lookup, the re-broadcast on first sight, and counting an
 `Unfounded` verdict against the accuser rather than the accused.
 
-Only one kind of evidence is raised today. A forged proof of knowledge is
-fully transferable: the round-1 package is public, so anyone re-runs the check.
-A bad sub-share is not raised at all, because `open_subshare` discards the
-plaintext when the Feldman check fails and there is no lower-level open — so a
-round-2 failure aborts this node and is logged, rather than producing an
-accusation nobody can check. Raising it properly needs an osst entry point that
-hands the recipient the plaintext it has just rejected.
+Two kinds of evidence, and they are not equally strong.
+
+A **forged proof of knowledge** is fully transferable: the round-1 package is
+public, so anyone re-runs the check and one upheld complaint is enough.
+
+A **bad sub-share** is checkable but not attributable. The accuser publishes
+the scalar it decrypted and names the dealer's commitment by digest; every node
+recomputes `g^s == Π C_j^{i^j}` against the commitment in its *own*
+`AgreedRound1`, so the accuser does not choose what its evidence is checked
+against. But Noise_K authenticates the dealer to the recipient and to nobody
+else, so a lying recipient can fabricate a scalar that fails the check exactly
+as a real one does: `Upheld` means "this scalar is not a valid sub-share for
+that commitment", not "the dealer sent it".
+
+The gate is therefore quorum, not adjudication. `osst::dkg::ComplaintTally`
+counts distinct accusers and the dealer goes only at `--threshold` of them —
+no coalition small enough to be tolerated can frame an honest member. A node
+whose own complaint did not reach the threshold holds no usable share from that
+dealer, so it refuses to finalize rather than writing a key package the rest of
+the group would disagree with.
+
+Publishing the scalar is a deliberate disclosure with a bounded cost: an
+`Upheld` verdict is itself the proof that the value is *not* a point on the
+agreed polynomial, so it says nothing about the group key or the accuser's real
+share. An `Unfounded` verdict does publish a genuine point — and there the
+accuser has spent one of its own and named itself.
 
 ### The inner signing round is commit–reveal
 
@@ -283,19 +310,20 @@ and a session id already in it does not open again.
   package that overtakes its dealer's round-1 broadcast is dropped and the
   ceremony stalls until it is restarted. Pre-existing; a retry queue is the
   obvious fix and is not here.
-- **A round-2 failure splits the group.** narsild cannot build osst's
-  `BadSubShare` evidence — `open_subshare` discards the plaintext when the
-  Feldman check fails — so a node that receives a bad sealed package aborts and
-  says so only in its own log. The other members have everything they need:
-  they finalize and write key packages, and the group ends up split between
-  nodes that completed a ceremony and one that did not. That is the outcome
-  M-6 is about, and it is the top open item here. Two things fix it, and both
-  are wanted: an osst entry point that hands the recipient the plaintext it has
-  just rejected, so the complaint becomes transferable; and a **completion
-  echo** — broadcast `H(coeff_commitments ‖ verification_shares)` after
-  `finalize()` and `save()` only on `n` matching, which would also make the
-  "every node derives the same public data" assertion a runtime check instead
-  of something only an in-process test exercises.
+- **A dealer that cheats fewer than `--threshold` members is excluded, not
+  blamed.** A bad-sub-share complaint is not attributable (above), so the
+  quorum gate is what keeps a lone liar from disqualifying an honest dealer —
+  and the same gate lets a dealer cheat up to `t-1` recipients undetected.
+  Those recipients hold no usable share and refuse to finalize, so this is
+  exclusion rather than a split key, and it is detectable but not attributable.
+  The fix is the GJKR dealer-defence round: the accused publishes `f_i(j)` for
+  each complainant and everyone checks it, which makes provenance public and
+  removes the need for a tally at all. It needs a reliable broadcast and a
+  timeout. Still wanted alongside it: a **completion echo** — broadcast
+  `H(coeff_commitments ‖ verification_shares)` after `finalize()` and `save()`
+  only on `n` matching, which would make the "every node derives the same
+  public data" assertion a runtime check instead of something only an
+  in-process test exercises.
 - **Out-of-order messages are rejected, not buffered.** An echo that arrives
   before the last dealer's round 1, a sealed round-2 package that arrives
   before this node has confirmed the echo round, a reveal that overtakes its
@@ -343,7 +371,8 @@ polynomial. Nobody learns the coefficients themselves.
    recorded, so a rogue-key setup has nowhere to start.
 2. **Round 2** — one sealed package per recipient, delivered to that recipient
    only — and not before the echo round has agreed what round 1 was. Opening
-   runs the Feldman check; a failure is a complaint naming the dealer.
+   runs the Feldman check against the agreed commitment; a failure is a
+   complaint naming the dealer, counted against the threshold.
 3. **Round 3** — aggregate into this node's share of each outer coefficient,
    and write the key package.
 
@@ -410,7 +439,7 @@ All endpoints are JSON.
 | POST | `/dkg/echo` | Peer echoes its digest of the round-1 set |
 | POST | `/dkg/round1` | Peer submits Feldman commitments and proof of knowledge |
 | POST | `/dkg/round2` | Peer delivers this node's sealed sub-shares |
-| POST | `/dkg/complaint` | Peer reports a bad dealer; aborts the ceremony here too |
+| POST | `/dkg/complaint` | Peer reports a bad dealer; re-broadcast, and aborts here at `--threshold` accusers |
 | POST | `/dkg/activate` | Re-install the persisted key package |
 | GET | `/dkg/status` | Ceremony progress, including any complaint |
 | GET | `/health` | Liveness, roster hash, identity, epoch |

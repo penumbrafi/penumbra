@@ -432,7 +432,7 @@ fn a_complaint_about_a_commitment_we_never_agreed_on_is_dropped() {
     .unwrap();
     assert!(matches!(
         ceremonies[2].receive_complaint(&crate::dkg::ComplaintMsg::encode(&complaint).unwrap()),
-        Err(DkgError::ComplaintBeforeAgreement(1))
+        Err(DkgError::UnknownAgreedCommitment(1))
     ));
     assert_eq!(ceremonies[2].abort_reason(), None);
 }

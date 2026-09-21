@@ -524,6 +524,7 @@ async fn run_round2(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) {
             tracing::error!("DKG round 2 (own packages): {}", e);
         }
     }
+    publish_complaint(app, guard).await;
 }
 
 async fn maybe_finalize(app: &AppState, guard: &mut Option<dkg::DkgCeremony>) -> Option<String> {
@@ -885,6 +886,12 @@ async fn handle_dkg_round2(
         Some(Err(e)) => return report_dkg(&app, e),
         None => return err_code(UNAVAILABLE, "no DKG ceremony active"),
     };
+    // A round-2 complaint lives on the *success* path: `receive_round2`
+    // returns `Ok` and records the accusation, because one accuser is not
+    // evidence and the ceremony carries on until `t` of them agree. If this
+    // were only in the error branch a cheated node would file its complaint
+    // and never send it, and the tally could never reach the threshold.
+    publish_complaint(&app, &mut guard).await;
 
     tracing::info!(
         "DKG round 2: sealed packages from dealer {}, complete={}",
@@ -966,9 +973,16 @@ async fn handle_dkg_complaint(
             Ok(v) => v,
             Err(r) => return r,
         };
-    if let Err(r) = same_index(sender, complaint.accuser_index) {
-        return r;
-    }
+    // Deliberately *not* `same_index`: a complaint is the one message here
+    // that carries its own authentication, a Schnorr signature under the
+    // accuser's identity key **the roster names**, checked in
+    // `receive_complaint`. Requiring sender == accuser would make the
+    // re-broadcast below a no-op — every relayed complaint would be refused by
+    // its recipient — and re-broadcast is the half of M-6 that stops a
+    // complaint delivered to one node from stopping only that node. The
+    // envelope still authenticates the relaying member, so this is not an
+    // unauthenticated endpoint.
+    let _ = sender;
     let mut guard = app.dkg_ceremony.lock().await;
     match guard.as_mut() {
         Some(c) => match c.receive_complaint(&complaint) {
