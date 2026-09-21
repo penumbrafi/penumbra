@@ -70,24 +70,37 @@ Now:
   complaint aborts the ceremony on every node**. A complaint that stayed with
   the node that raised it would be worse than useless: the others would
   finalize and write key packages for a group one member is not in. A
-  complaint is not publicly verifiable — the package it is about was sealed to
-  the complainant — so accepting one on trust lets any single member halt a
-  ceremony. That is the price of confidentiality in round 2, and with a fixed
-  roster and a cheap restart it is the right way round.
+  complaint carries the ceremony it belongs to, the commitment it is about and
+  its evidence, is re-broadcast on receipt, and is adjudicated by every node
+  from data it holds: evidence that checks out convicts the dealer, evidence
+  that contradicts the accusation flags the accuser, and a complaint nobody
+  else can check needs `--threshold` independent accusers before it stops
+  anything.
 
-### The signed roster
+### The roster, and what it authenticates
 
-Each node has a static X25519 identity, generated at first start into
-`<data-dir>/identity.key` with mode `0600` and derived from that seed with
-`osst::sealed::x25519_secret_from_seed` — a KDF, so the decryption key is not
-the identity seed itself. `--print-identity` prints the public half.
+"The signed roster" is what an earlier version of this README called this
+section, and nothing signed the roster: it is configuration, distributed out
+of band, and its integrity comes from every node being given the same one. Its
+*fingerprint* is what enters the ceremony.
 
-The roster is configuration: `--peer INDEX=URL=X25519_PUBKEY_HEX`, once per
-member, identical on every node. Its fingerprint is SHA-256 over the sorted
+Each node has one identity seed, generated at first start into
+`<data-dir>/identity.key` with mode `0600`, and two keys derived from it:
+
+- an **X25519** key, via `osst::sealed::x25519_secret_from_seed`, which seals
+  round-2 sub-shares to this node;
+- an **ed25519** key, via HKDF-SHA256 under a distinct `info` string, which
+  signs this node's requests to its peers.
+
+Neither is the seed and neither is computable from the other.
+`--print-identity` prints both, in the form a peer puts in its roster entry.
+
+The roster is configuration: `--peer INDEX=URL=X25519_PUBKEY_HEX=ED25519_PUBKEY_HEX`,
+once per member, identical on every node. Its fingerprint is SHA-256 over the sorted
 `(index, pubkey, url)` triples, each field length-prefixed. `osst`'s own
 `SealedRoster` carries only `(index, pubkey)` — a transport is out of scope for
 the crate — so the URLs enter the Noise prologue transitively: the ceremony's
-session id is `H(domain ‖ roster_hash ‖ epoch)`, and that session id is what
+session id is `H(domain ‖ roster_hash ‖ epoch ‖ ceremony_nonce)`, and that session id is what
 goes into the prologue with the roster and the round number. Two nodes that
 disagree about any member's URL, key or index derive different session ids, and
 their sealed packages simply do not open.
@@ -120,23 +133,115 @@ to a protocol-defined signature such as an Orchard `SpendAuthSig` over a
 consensus-fixed sighash, where there is nowhere to put the epoch; retiring
 shares there needs an on-chain rotation to a new group key.
 
+### Authenticated requests
+
+Every mutating endpoint takes a signed envelope, not a bare body:
+
+```
+signed bytes = "narsild/request/v1"
+             ‖ roster_hash ‖ sender_index ‖ timestamp ‖ nonce
+             ‖ len(path) ‖ path
+             ‖ len(body) ‖ body            <- the exact bytes received
+```
+
+signed with the sender's ed25519 roster key. Each field is there for a
+substitution: the roster hash so a member of a retired group cannot drive a
+current one; the path so a `/dkg/complaint` envelope does not replay as a
+`/sign/round2`; the timestamp (±5 minutes) and the one-time nonce for replay,
+with the seen nonces held in memory *and* appended to
+`<data-dir>/seen-nonces.log` with `fsync` so a restart does not reopen the
+window. A signature that does not verify does not consume a nonce. Handlers
+additionally require the envelope's sender to be the index the message claims
+for itself, so a member cannot post a round-1 package, a complaint or a share
+"from" another member.
+
+The read-only endpoints — `/health`, `/sign/status`, `/dkg/status` — are
+unauthenticated, and carry only public data. That is a property of
+`response.rs`, where every response body is a named type and a test fails on
+any field outside an audited list.
+
+This is authentication, not confidentiality: an envelope is plaintext over
+HTTP. The only secret on the wire is a round-2 sub-share, which is sealed
+independently. Deployments that want the traffic private should run it over a
+private link or a TLS terminator; none of the above depends on that.
+
+### What this node will sign
+
+Authentication says who asked. It does not say whether the thing asked for
+should happen, and a roster member whose host is compromised is still a roster
+member. So the message is put past a local `SigningPolicy` before a nonce is
+sampled and again before a share is released, and the message a session was
+opened for cannot change afterwards.
+
+**The shipped default signs nothing.** `--dev-allow-message-digests FILE` takes
+an auditable list of approved message digests for devnets. The production
+policy is the bridge component: the node fetches the withdrawal event from its
+own `pd` and reconstructs the message the event implies — "the event, not any
+off-chain message, is the authorization" — and that is a `SigningPolicy`
+implementation, so nothing else in this crate changes when it lands.
+
+### Starting a DKG, and not losing the key
+
+A DKG overwrites the key package, and the key package is the only thing that
+can spend what the group holds. So:
+
+- `/dkg/init` **proposes**; it does not start anything. The proposal names the
+  epoch, the attempt nonce and whether an existing key package is to be
+  replaced. Each member decides for itself and broadcasts a signed approval,
+  and a node starts the ceremony when `--threshold` members have approved that
+  exact proposal.
+- A node that already holds a key package approves nothing that does not say
+  `rotate: true`, and approves a rotation only if its own operator has set
+  `--allow-rotation`. A planned reshare is an operator action on each node.
+- A round-1 package for a ceremony this node has not started is refused. There
+  is no auto-adoption of a peer-asserted epoch.
+- The write is not in place: staging file, retained
+  `key_package.epoch-N.bak`, atomic rename, and `epoch.hwm` — a separate,
+  monotonic file — advanced last. A key package whose epoch is below the mark
+  does not load, so an epoch rollback takes tampering with two files rather
+  than removing one.
+
+### The echo round
+
+After round 1 closes, every node broadcasts the canonical digest of the
+round-1 set it accepted and refuses to produce a single sealed round-2 package
+until every member's digest matches its own. Sealing binds a sub-share to the
+commitment *as delivered to that recipient*; nothing binds that commitment to
+a single value every recipient saw, so a dealer can send `C_A` to Alice and
+`C_B` to Bob, pass every per-recipient check, and split the group. The echo is
+what sees it, and a mismatch aborts naming the members that differ.
+
+### Nonce state is durable
+
+A session id is good for one share. `<data-dir>/spent-sessions.log` is
+append-only and `fsync`'d per entry, written *before* the share is produced,
+and a session id already in it does not open again.
+
+> **Snapshot restore is not supported.** Restoring a narsild data directory
+> from a filesystem snapshot rolls this log back with everything else, and a
+> session id that was signed after the snapshot becomes signable again — two
+> responses under one nonce disclose the share by elementary algebra. What the
+> log buys is that an *ordinary* restart is safe: a crash, a redeploy, an OOM
+> kill. A node whose data directory has been restored from a snapshot must be
+> treated as compromised and rotated out, not restarted. The same applies to
+> the replay log.
+
 ### What is still missing
 
-- The HTTP endpoints have no authentication of their own. The roster
-  authenticates the DKG's secret round and the signing context, not the
-  transport: anyone who can reach the port can start sessions and post public
-  contributions. Keep the port on a private network.
 - Resharing is not implemented, so the epoch only ever advances by re-running
   the DKG, which changes the group key.
 - Message delivery is fire-and-forget with no ordering or retry, so a round-2
   package that overtakes its dealer's round-1 broadcast is dropped and the
   ceremony stalls until it is restarted. Pre-existing; a retry queue is the
   obvious fix and is not here.
-- Nonce state is in memory. A node that restarts between round 1 and round 2
-  loses its nonces, which is safe; a node that is restored from a snapshot
-  could be made to reuse them, which is not. A durable spent-round store keyed
-  by `(epoch, session_id, holder_index)` is `osst`'s open item A-3 and this
-  crate's too.
+- Round-2 complaints are not publicly verifiable. osst 0.4.0's
+  `open_subshare` discards the plaintext on a failed check, so a complainant
+  cannot publish the sub-share that would let every node re-run the Feldman
+  check itself. Complaints of that class therefore need `--threshold`
+  independent accusers against one dealer before the ceremony aborts. The
+  adjudication path for a justified complaint is written and tested; osst
+  0.5.0's plaintext-returning open is a change to the producing side only.
+- There is no rate limiting beyond the session cap and the 1 MiB body limit.
 
 ## Design
 
@@ -175,8 +280,8 @@ polynomial. Nobody learns the coefficients themselves.
    by `osst::dkg::DkgState::submit_commitment` *before* the commitment is
    recorded, so a rogue-key setup has nowhere to start.
 2. **Round 2** — one sealed package per recipient, delivered to that recipient
-   only. Opening runs the Feldman check; a failure is a complaint naming the
-   dealer, and aborts the ceremony.
+   only — and not before the echo round has agreed what round 1 was. Opening
+   runs the Feldman check; a failure is a complaint naming the dealer.
 3. **Round 3** — aggregate into this node's share of each outer coefficient,
    and write the key package.
 
@@ -211,8 +316,19 @@ so a bad share names its holder instead of silently corrupting `z_nested`.
 ### `client.rs` — `NarsilClient`
 
 The coordinator role: start round 1, wait for the threshold, build the outer
-package, publish the whole outer round, wait for `z_nested`. It cannot make a
-node sign anything the node has not independently derived.
+package, publish the whole outer round, wait for `z_nested`. The coordinator
+holds a roster identity and signs every request it makes; there is no
+anonymous coordinator role.
+
+What a coordinator cannot do is substitute the *context*: the epoch, the
+manifest hash and the group public key come from the node's own key package,
+and the three scalars it sends are recomputed and merely checked. What it
+chooses is the **message**, and that is why a node also runs the message past
+its own `SigningPolicy` (below) before it samples a nonce or releases a share.
+An earlier version of this README said the coordinator "cannot make a node
+sign anything the node has not independently derived"; that was true of the
+epoch and manifest binding and false of the payload, which is the part that
+matters.
 
 ## HTTP API
 
@@ -225,7 +341,10 @@ All endpoints are JSON.
 | POST | `/sign/status` | Poll progress; carries the nested commitment pair and `z_nested` |
 | POST | `/sign/round2` | Publish the outer round; returns this node's share |
 | POST | `/sign/share` | Peer submits its round-2 signature share |
-| POST | `/dkg/init` | Begin a DKG ceremony for a generation |
+| POST | `/dkg/init` | Propose a DKG for a generation; starts nothing on its own |
+| POST | `/dkg/propose` | Peer proposes a DKG |
+| POST | `/dkg/approve` | Peer approves a proposal |
+| POST | `/dkg/echo` | Peer echoes its digest of the round-1 set |
 | POST | `/dkg/round1` | Peer submits Feldman commitments and proof of knowledge |
 | POST | `/dkg/round2` | Peer delivers this node's sealed sub-shares |
 | POST | `/dkg/complaint` | Peer reports a bad dealer; aborts the ceremony here too |
@@ -243,27 +362,30 @@ narsild --data-dir /var/lib/narsild --index 1 --print-identity
 
 ```
 narsild \
-  --bind 0.0.0.0:9200 \
+  --bind 127.0.0.1:9200 \
   --data-dir /var/lib/narsild \
   --index 1 \
-  --peer 1=http://val1:9200=<pubkey1> \
-  --peer 2=http://val2:9200=<pubkey2> \
-  --peer 3=http://val3:9200=<pubkey3> \
+  --peer 1=http://val1:9200=<x25519-1>=<ed25519-1> \
+  --peer 2=http://val2:9200=<x25519-2>=<ed25519-2> \
+  --peer 3=http://val3:9200=<x25519-3>=<ed25519-3> \
   --threshold 2 \
-  --outer-threshold 1 \
+  --outer-threshold 2 \
   --nested-position 1
 ```
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--bind` | `0.0.0.0:9200` | Listen address |
+| `--bind` | `127.0.0.1:9200` | Listen address |
 | `--index` | – | This node's 1-indexed holder index; must be on the roster |
 | `--data-dir` | `./narsild-data` | Identity and key package |
-| `--peer` | – | `INDEX=URL=X25519_PUBKEY_HEX`, once per member |
+| `--peer` | – | `INDEX=URL=X25519_PUBKEY_HEX=ED25519_PUBKEY_HEX`, once per member |
 | `--threshold` | `3` | Inner FROST threshold |
-| `--outer-threshold` | `1` | Number of outer polynomial coefficients |
+| `--outer-threshold` | – | Number of outer polynomial coefficients; ≥ 2 unless `--dev-single-signer` |
+| `--dev-single-signer` | – | Permit `--outer-threshold 1`. Development only |
+| `--allow-rotation` | – | Consent to a DKG that replaces this node's key package |
+| `--dev-allow-message-digests` | – | File of approved message digests; without it this node signs nothing |
 | `--nested-position` | `1` | The nested position's index in the outer signing set |
-| `--print-identity` | – | Print the X25519 public key and exit |
+| `--print-identity` | – | Print `x25519=ed25519` and exit |
 
 Build and test from inside this directory so that the crate's own
 `rust-toolchain.toml` applies:
