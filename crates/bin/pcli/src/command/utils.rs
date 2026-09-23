@@ -2,6 +2,18 @@ use comfy_table::{presets, Table};
 use penumbra_sdk_asset::{asset, Value};
 use penumbra_sdk_dex::lp::position::Position;
 
+/// An asset's denom as a string, falling back to the asset id when unknown.
+///
+/// The JSON renderings emit this alongside the raw integer amount, since
+/// `Value::format` interleaves the two (`1.727mpenumbra`) into a string whose
+/// number is a display-unit scaling of the amount, not the amount.
+pub(crate) fn denom(asset_id: &asset::Id, asset_cache: &asset::Cache) -> String {
+    asset_cache
+        .get(asset_id)
+        .map(|denom| denom.to_string())
+        .unwrap_or_else(|| asset_id.to_string())
+}
+
 pub(crate) fn render_positions(asset_cache: &asset::Cache, positions: &[Position]) -> String {
     let mut table = Table::new();
     table.load_preset(presets::NOTHING);

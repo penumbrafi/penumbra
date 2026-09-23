@@ -1,5 +1,7 @@
 use anyhow::Result;
 use comfy_table::{presets, Table};
+
+use crate::opt::OutputFormat;
 use penumbra_sdk_keys::FullViewingKey;
 use penumbra_sdk_transaction::MemoView;
 use penumbra_sdk_view::ViewClient;
@@ -17,7 +19,12 @@ impl TransactionHashesCmd {
         false
     }
 
-    pub async fn exec<V: ViewClient>(&self, _fvk: &FullViewingKey, view: &mut V) -> Result<()> {
+    pub async fn exec<V: ViewClient>(
+        &self,
+        _fvk: &FullViewingKey,
+        view: &mut V,
+        output: OutputFormat,
+    ) -> Result<()> {
         // Initialize the table
 
         let mut table = Table::new();
@@ -37,6 +44,19 @@ impl TransactionHashesCmd {
                 ),
                 _ => (String::new(), String::new()),
             };
+            if output == OutputFormat::Json {
+                // One object per transaction: `{"height":N,"tx_hash":"<64 hex>","return_address":"…","memo":"…"}`.
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "height": tx_info.height,
+                        "tx_hash": hex::encode(tx_info.id),
+                        "return_address": return_address,
+                        "memo": memo,
+                    })
+                );
+                continue;
+            }
             table.add_row(vec![
                 format!("{}", tx_info.height),
                 format!("{}", hex::encode(tx_info.id)),
@@ -45,7 +65,9 @@ impl TransactionHashesCmd {
             ]);
         }
 
-        println!("{table}");
+        if output != OutputFormat::Json {
+            println!("{table}");
+        }
 
         Ok(())
     }

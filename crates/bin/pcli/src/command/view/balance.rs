@@ -1,6 +1,8 @@
 use anyhow::Result;
 use comfy_table::{presets, Table};
 
+use crate::opt::OutputFormat;
+use penumbra_sdk_asset::Value;
 use penumbra_sdk_keys::AddressView;
 use penumbra_sdk_sct::CommitmentSource;
 use penumbra_sdk_view::ViewClient;
@@ -17,18 +19,12 @@ impl BalanceCmd {
         false
     }
 
-    pub async fn exec<V: ViewClient>(&self, view: &mut V) -> Result<()> {
+    pub async fn exec<V: ViewClient>(&self, view: &mut V, output: OutputFormat) -> Result<()> {
         let asset_cache = view.assets().await?;
-
-        // Initialize the table
-        let mut table = Table::new();
-        table.load_preset(presets::NOTHING);
 
         let notes = view.unspent_notes_by_account_and_asset().await?;
 
         if self.by_note {
-            table.set_header(vec!["Account", "Value", "Source", "Sender"]);
-
             let rows = notes
                 .iter()
                 .flat_map(|(index, notes_by_asset)| {
@@ -53,6 +49,27 @@ impl BalanceCmd {
                  */
                 ;
 
+            if output == OutputFormat::Json {
+                for (index, value, source, return_address) in rows {
+                    println!(
+                        "{}",
+                        json_row(
+                            index,
+                            &value,
+                            &asset_cache,
+                            Some(&format_source(&source)),
+                            Some(&format_return_address(&return_address)),
+                        )
+                    );
+                }
+                return Ok(());
+            }
+
+            // Initialize the table
+            let mut table = Table::new();
+            table.load_preset(presets::NOTHING);
+            table.set_header(vec!["Account", "Value", "Source", "Sender"]);
+
             for (index, value, source, return_address) in rows {
                 table.add_row(vec![
                     format!("# {}", index),
@@ -66,8 +83,6 @@ impl BalanceCmd {
 
             return Ok(());
         } else {
-            table.set_header(vec!["Account", "Amount"]);
-
             let rows = notes
                 .iter()
                 .flat_map(|(index, notes_by_asset)| {
@@ -88,6 +103,17 @@ impl BalanceCmd {
                     }
                 });
 
+            if output == OutputFormat::Json {
+                for (index, value) in rows {
+                    println!("{}", json_row(index, &value, &asset_cache, None, None));
+                }
+                return Ok(());
+            }
+
+            let mut table = Table::new();
+            table.load_preset(presets::NOTHING);
+            table.set_header(vec!["Account", "Amount"]);
+
             for (index, value) in rows {
                 table.add_row(vec![format!("# {}", index), value.format(&asset_cache)]);
             }
@@ -97,6 +123,37 @@ impl BalanceCmd {
             return Ok(());
         }
     }
+}
+
+/// One balance row as JSON: `{"account":N,"amount":"<raw u128>","denom":"…"}`.
+///
+/// `amount` is the raw integer, deliberately *not* `Value::format(&asset_cache)`,
+/// which prints display units with a suffix (`1.727mpenumbra`) — a string whose
+/// number is not the balance, and which every caller then has to un-format.
+/// `by_note` rows carry the note's source and sender too.
+fn json_row(
+    account: u32,
+    value: &Value,
+    asset_cache: &penumbra_sdk_asset::asset::Cache,
+    source: Option<&str>,
+    sender: Option<&str>,
+) -> serde_json::Value {
+    let denom = asset_cache
+        .get(&value.asset_id)
+        .map(|denom| denom.to_string())
+        .unwrap_or_else(|| value.asset_id.to_string());
+    let mut row = serde_json::json!({
+        "account": account,
+        "amount": u128::from(value.amount).to_string(),
+        "denom": denom,
+    });
+    if let Some(source) = source {
+        row["source"] = serde_json::Value::String(source.to_owned());
+    }
+    if let Some(sender) = sender {
+        row["sender"] = serde_json::Value::String(sender.to_owned());
+    }
+    row
 }
 
 fn format_source(source: &CommitmentSource) -> String {

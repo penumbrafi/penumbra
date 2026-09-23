@@ -18,6 +18,10 @@ async fn main() -> Result<()> {
 
     let mut opt = Opt::parse();
 
+    // Reject an output format this command cannot honour, before doing any
+    // work: no wallet, no view service, no network. Deny by default.
+    opt.cmd.check_output(opt.output)?;
+
     // Initialize tracing here, rather than when converting into an `App`, so
     // that tracing is set up even for wallet commands that don't build the `App`.
     opt.init_tracing();

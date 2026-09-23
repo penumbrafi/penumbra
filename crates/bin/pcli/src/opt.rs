@@ -20,6 +20,24 @@ use std::io::IsTerminal as _;
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
+/// How a command writes its result.
+///
+/// `Text` is what pcli has always printed, and stays the default. `Json` is
+/// machine-readable: one JSON object per line, fields instead of prose, and
+/// raw integers instead of display units — a caller (or an agent) reads
+/// values, not a padded table it has to re-parse.
+///
+/// A command that cannot honour the request must *fail*, not print text: see
+/// `Command::check_output`. Silently ignoring `--output json` is worse than
+/// rejecting it, because the caller then parses prose it believes is JSON.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum OutputFormat {
+    Text,
+    Json,
+    /// Base64, for results that are raw bytes (e.g. `pcli q tx`).
+    Base64,
+}
+
 #[derive(Debug, Parser)]
 #[clap(name = "pcli", about = "The Penumbra command-line interface.", version)]
 pub struct Opt {
@@ -33,6 +51,10 @@ pub struct Opt {
     /// By default, this URL is provided by pcli's config. See `pcli init` for more information.
     #[clap(long, parse(try_from_str = Url::parse))]
     pub grpc_url: Option<Url>,
+    /// How to write results: `text` (the default), `json`, or, where the
+    /// result is raw bytes, `base64`.
+    #[clap(short = 'o', long, global = true, value_enum)]
+    pub output: Option<OutputFormat>,
 }
 
 impl Opt {
@@ -190,6 +212,7 @@ impl Opt {
             governance_custody,
             config,
             save_transaction_here_instead: None,
+            output: self.output,
         };
         Ok((app, self.cmd))
     }

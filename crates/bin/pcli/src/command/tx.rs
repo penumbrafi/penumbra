@@ -87,6 +87,7 @@ use tonic::transport::{Channel, ClientTlsConfig};
 use url::Url;
 
 use crate::command::tx::auction::AuctionCmd;
+use crate::network::progress;
 use crate::App;
 use clap::Parser;
 
@@ -390,6 +391,7 @@ impl TxCmd {
     }
 
     pub async fn exec(&self, app: &mut App) -> Result<()> {
+        let json = app.json_output();
         // TODO: use a command line flag to determine the fee token,
         // and pull the appropriate GasPrices out of this rpc response,
         // the rest should follow
@@ -481,11 +483,11 @@ impl TxCmd {
                 let num_plans = plans.len();
 
                 for (i, plan) in plans.into_iter().enumerate() {
-                    println!("building sweep {i} of {num_plans}");
+                    progress(json, format_args!("building sweep {i} of {num_plans}"));
                     app.build_and_submit_transaction(plan).await?;
                 }
                 if num_plans == 0 {
-                    println!("finished sweeping");
+                    progress(json, format_args!("finished sweeping"));
                     break;
                 }
             },
@@ -547,19 +549,22 @@ impl TxCmd {
                 let pro_rata_outputs = swap_record
                     .output_data
                     .pro_rata_outputs((swap_plaintext.delta_1_i, swap_plaintext.delta_2_i));
-                println!("Swap submitted and batch confirmed!");
-                println!(
-                    "You will receive outputs of {} and {}. Claiming now...",
-                    Value {
-                        amount: pro_rata_outputs.0,
-                        asset_id: swap_record.output_data.trading_pair.asset_1(),
-                    }
-                    .format(&asset_cache),
-                    Value {
-                        amount: pro_rata_outputs.1,
-                        asset_id: swap_record.output_data.trading_pair.asset_2(),
-                    }
-                    .format(&asset_cache),
+                progress(json, format_args!("Swap submitted and batch confirmed!"));
+                progress(
+                    json,
+                    format_args!(
+                        "You will receive outputs of {} and {}. Claiming now...",
+                        Value {
+                            amount: pro_rata_outputs.0,
+                            asset_id: swap_record.output_data.trading_pair.asset_1(),
+                        }
+                        .format(&asset_cache),
+                        Value {
+                            amount: pro_rata_outputs.1,
+                            asset_id: swap_record.output_data.trading_pair.asset_2(),
+                        }
+                        .format(&asset_cache),
+                    ),
                 );
 
                 let params = app
@@ -800,7 +805,10 @@ impl TxCmd {
 
                 for (address_index, notes_by_asset) in notes.into_iter() {
                     for (token, notes) in notes_by_asset.into_iter() {
-                        println!("claiming {}", token.denom().default_unit());
+                        progress(
+                            json,
+                            format_args!("claiming {}", token.denom().default_unit()),
+                        );
 
                         let validator_identity = token.validator();
                         let unbonding_start_height = token.unbonding_start_height();
@@ -1002,6 +1010,14 @@ impl TxCmd {
                         .with_context(|| format!("cannot create file {file:?}"))?
                         .write_all(toml::to_string_pretty(&toml_template)?.as_bytes())
                         .context("could not write file")?;
+                } else if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "template",
+                            "toml": toml::to_string_pretty(&toml_template)?,
+                        })
+                    );
                 } else {
                     println!("{}", toml::to_string_pretty(&toml_template)?);
                 }
@@ -1135,7 +1151,7 @@ impl TxCmd {
                 let positions = order.as_position(&asset_cache, OsRng)?;
                 tracing::info!(?positions);
                 for position in &positions {
-                    println!("Position id: {}", position.id());
+                    progress(json, format_args!("Position id: {}", position.id()));
                 }
 
                 let mut planner = Planner::new(OsRng);
@@ -1347,15 +1363,21 @@ impl TxCmd {
                     .await?;
 
                 if owned_position_ids.is_empty() {
-                    println!("No open positions are available to close.");
+                    progress(
+                        json,
+                        format_args!("No open positions are available to close."),
+                    );
                     return Ok(());
                 }
 
-                println!(
-                    "{} total open positions, closing in {} batches of {}",
-                    owned_position_ids.len(),
-                    owned_position_ids.len() / POSITION_CHUNK_SIZE + 1,
-                    POSITION_CHUNK_SIZE
+                progress(
+                    json,
+                    format_args!(
+                        "{} total open positions, closing in {} batches of {}",
+                        owned_position_ids.len(),
+                        owned_position_ids.len() / POSITION_CHUNK_SIZE + 1,
+                        POSITION_CHUNK_SIZE
+                    ),
                 );
 
                 let mut planner = Planner::new(OsRng);
@@ -1397,15 +1419,21 @@ impl TxCmd {
                     .await?;
 
                 if owned_position_ids.is_empty() {
-                    println!("No closed positions are available to withdraw.");
+                    progress(
+                        json,
+                        format_args!("No closed positions are available to withdraw."),
+                    );
                     return Ok(());
                 }
 
-                println!(
-                    "{} total closed positions, withdrawing in {} batches of {}",
-                    owned_position_ids.len(),
-                    owned_position_ids.len() / POSITION_CHUNK_SIZE + 1,
-                    POSITION_CHUNK_SIZE,
+                progress(
+                    json,
+                    format_args!(
+                        "{} total closed positions, withdrawing in {} batches of {}",
+                        owned_position_ids.len(),
+                        owned_position_ids.len() / POSITION_CHUNK_SIZE + 1,
+                        POSITION_CHUNK_SIZE,
+                    ),
                 );
 
                 let mut client = DexQueryServiceClient::new(app.pd_channel().await?);
@@ -1557,9 +1585,12 @@ impl TxCmd {
 
                 let noble_address = address.noble_forwarding_address(channel);
 
-                println!(
-                    "registering Noble forwarding account with address {} to forward to Penumbra address {}...",
-                    noble_address, address
+                progress(
+                    json,
+                    format_args!(
+                        "registering Noble forwarding account with address {} to forward to Penumbra address {}...",
+                        noble_address, address
+                    ),
                 );
 
                 let mut noble_client = CosmosServiceClient::new(
@@ -1628,7 +1659,7 @@ impl TxCmd {
                 //     })
                 //     .await?;
 
-                println!("Noble response: {:?}", r);
+                progress(json, format_args!("Noble response: {:?}", r));
             }
             TxCmd::LqtVote(cmd) => cmd.exec(app, gas_prices).await?,
         }

@@ -3,6 +3,7 @@ use base64::Engine;
 use rand_core::OsRng;
 use std::str::FromStr;
 
+use crate::opt::OutputFormat;
 use penumbra_sdk_keys::{keys::AddressIndex, Address, FullViewingKey};
 
 #[derive(Debug, clap::Parser)]
@@ -33,7 +34,7 @@ impl AddressCmd {
         true
     }
 
-    pub fn exec(&self, fvk: &FullViewingKey) -> Result<()> {
+    pub fn exec(&self, fvk: &FullViewingKey, output: OutputFormat) -> Result<()> {
         let index: Result<u32, _> = self.address_or_index.parse();
 
         if let Ok(index) = index {
@@ -45,33 +46,55 @@ impl AddressCmd {
             };
 
             if self.base64 {
-                println!(
-                    "{}",
-                    base64::engine::general_purpose::STANDARD.encode(address.to_vec()),
-                );
+                let encoded = base64::engine::general_purpose::STANDARD.encode(address.to_vec());
+                if output == OutputFormat::Json {
+                    println!("{}", serde_json::json!({ "address_base64": encoded }));
+                } else {
+                    println!("{encoded}");
+                }
             } else if self.transparent {
                 if index != 0 {
                     return Err(anyhow::anyhow!(
                         "warning: index must be 0 to use transparent address encoding"
                     ));
                 }
-                println!("{}", fvk.incoming().transparent_address());
+                let address = fvk.incoming().transparent_address();
+                if output == OutputFormat::Json {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "address": address.to_string(), "transparent": true })
+                    );
+                } else {
+                    println!("{address}");
+                }
             } else {
                 if self.fvk {
                     eprintln!("🔥 CAUTION: POSSESSION OF THE FOLLOWING FULL VIEWING KEY WILL");
                     eprintln!("🔥 PROVIDE VISIBILITY TO ALL ACTIVITY ON ITS ASSOCIATED ACCOUNTS.");
                     eprintln!("🔥 DISTRIBUTE WITH CARE!");
                     eprintln!("");
-                    println!("{}", fvk);
+                    if output == OutputFormat::Json {
+                        println!("{}", serde_json::json!({ "fvk": fvk.to_string() }));
+                    } else {
+                        println!("{}", fvk);
+                    }
                 } else if let Some(fvk) = &self.from_fvk {
                     let (address, _) = FullViewingKey::payment_address(
                         &FullViewingKey::from_str(&fvk[..])?,
                         AddressIndex::new(0),
                     );
 
-                    println!("{}", address);
+                    if output == OutputFormat::Json {
+                        println!("{}", serde_json::json!({ "address": address.to_string() }));
+                    } else {
+                        println!("{}", address);
+                    }
                 } else {
-                    println!("{}", address);
+                    if output == OutputFormat::Json {
+                        println!("{}", serde_json::json!({ "address": address.to_string() }));
+                    } else {
+                        println!("{}", address);
+                    }
                 }
             };
         } else {
@@ -83,15 +106,42 @@ impl AddressCmd {
                 .map_err(|_| anyhow::anyhow!("Provided address is invalid."))?;
 
             match fvk.address_index(&address) {
-                Some(address_index) => println!(
-                    "Address is viewable with this full viewing key. Account index is {0}. {1}",
-                    address_index.account,
-                    match address_index.randomizer != [0u8; 12] {
-                        true => "Address is an IBC deposit address.",
-                        false => "",
+                Some(address_index) => {
+                    let ibc_deposit = address_index.randomizer != [0u8; 12];
+                    if output == OutputFormat::Json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "address": address.to_string(),
+                                "viewable": true,
+                                "account": address_index.account,
+                                "ibc_deposit": ibc_deposit,
+                            })
+                        );
+                    } else {
+                        println!(
+                            "Address is viewable with this full viewing key. Account index is {0}. {1}",
+                            address_index.account,
+                            match ibc_deposit {
+                                true => "Address is an IBC deposit address.",
+                                false => "",
+                            }
+                        );
                     }
-                ),
-                None => println!("Address is not viewable with this full viewing key."),
+                }
+                None => {
+                    if output == OutputFormat::Json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "address": address.to_string(),
+                                "viewable": false,
+                            })
+                        );
+                    } else {
+                        println!("Address is not viewable with this full viewing key.");
+                    }
+                }
             }
         }
 
