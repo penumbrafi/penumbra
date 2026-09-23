@@ -626,8 +626,10 @@ impl SimulationService for Server {
         let start_time = std::time::Instant::now();
         let state = self.storage.latest_snapshot();
 
+        // Use the same liveness-filtered candidate set as batch execution so that
+        // simulations reflect the routes consensus will actually consider.
         let mut routing_params = state
-            .routing_params()
+            .live_routing_params()
             .await
             .expect("dex routing params are set");
         match routing_strategy {

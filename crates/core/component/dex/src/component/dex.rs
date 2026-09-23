@@ -11,6 +11,7 @@ use penumbra_sdk_fee::component::StateWriteExt as _;
 use penumbra_sdk_fee::Fee;
 use penumbra_sdk_num::Amount;
 use penumbra_sdk_proto::{DomainType as _, StateReadProto, StateWriteProto};
+use penumbra_sdk_shielded_pool::component::IbcAssetLiveness as _;
 use tendermint::v0_37::abci;
 use tracing::instrument;
 
@@ -103,7 +104,13 @@ impl Component for Dex {
         // This has already happened in the action handlers for each `PositionOpen` action.
 
         // 2. For each batch swap during the block, calculate clearing prices and set in the JMT.
-        let routing_params = state.routing_params().await.expect("dex params are set");
+        //
+        // Fixed candidates whose IBC client is no longer active are filtered out here,
+        // once per block; the same (filtered) set is reused for arbitrage below.
+        let routing_params = state
+            .live_routing_params()
+            .await
+            .expect("dex params are set");
         let execution_budget = state
             .get_dex_params()
             .await
@@ -267,8 +274,50 @@ pub trait StateReadExt: StateRead {
     }
 
     /// Uses the DEX parameters to construct a `RoutingParams` for use in execution or simulation.
+    ///
+    /// This does not filter the fixed candidates by IBC liveness; see
+    /// [`StateReadExt::live_routing_params`] for the variant used by batch execution.
     async fn routing_params(&self) -> Result<RoutingParams> {
         self.get_dex_params().await.map(RoutingParams::from)
+    }
+
+    /// Like [`StateReadExt::routing_params`], but drops any fixed routing candidate
+    /// that is an ICS-20 asset whose IBC client is not active: such an asset can no
+    /// longer cross the bridge and must not be used as a routing hub, even if
+    /// governance has not yet removed it from the list.
+    ///
+    /// This performs several state reads per IBC candidate, so it should be called
+    /// once per block (as `Dex::end_block` does) rather than per route or per action.
+    async fn live_routing_params(&self) -> Result<RoutingParams> {
+        let params = self.get_dex_params().await?;
+        let mut live_candidates = Vec::with_capacity(params.fixed_candidates.len());
+        for candidate in &params.fixed_candidates {
+            match self.ibc_asset_status_now(candidate).await {
+                Ok(status) if status.is_dead() => {
+                    tracing::debug!(
+                        asset_id = %candidate,
+                        ?status,
+                        "dropping fixed routing candidate without a live IBC client"
+                    );
+                }
+                Ok(_) => live_candidates.push(*candidate),
+                Err(e) => {
+                    // Deterministic across nodes (same state, same error); keep the
+                    // candidate rather than halting block execution over a routing hint.
+                    tracing::warn!(
+                        asset_id = %candidate,
+                        ?e,
+                        "could not determine IBC liveness of routing candidate, keeping it"
+                    );
+                    live_candidates.push(*candidate);
+                }
+            }
+        }
+        Ok(RoutingParams {
+            fixed_candidates: Arc::new(live_candidates),
+            max_hops: params.max_hops as usize,
+            price_limit: None,
+        })
     }
 
     async fn output_data(
