@@ -12,6 +12,7 @@ component = [
     "cnidarium-component",
     "cnidarium",
     "penumbra-sdk-proto/cnidarium",
+    "penumbra-sdk-shielded-pool/component",
     "tonic",
     "penumbra-sdk-proto/rpc"
 ]
@@ -34,6 +35,9 @@ metrics = {workspace = true}
 penumbra-sdk-asset = {workspace = true, default-features = false}
 penumbra-sdk-num = {workspace = true, default-features = false}
 penumbra-sdk-proto = {workspace = true, default-features = false}
+# Only used by the `component` feature, to check that alternative fee assets
+# received over IBC are still backed by a live client.
+penumbra-sdk-shielded-pool = {workspace = true, optional = true, default-features = false}
 rand = {workspace = true}
 rand_core = {workspace = true, features = ["getrandom"]}
 serde = {workspace = true, features = ["derive"]}

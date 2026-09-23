@@ -1,9 +1,10 @@
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context as _, Result};
 use async_trait::async_trait;
 use cnidarium::StateWrite;
 use penumbra_sdk_asset::Value;
 use penumbra_sdk_proto::core::component::fee::v1 as pb;
 use penumbra_sdk_proto::state::StateWriteProto as _;
+use penumbra_sdk_shielded_pool::component::IbcAssetLiveness as _;
 
 use crate::{Fee, Gas};
 
@@ -25,12 +26,23 @@ pub trait FeePay: StateWrite {
                 .expect("alt gas prices must be present in state");
             // This does a linear scan, but we think that's OK because we're expecting
             // a small number of alt gas prices before switching to the DEX directly.
-            alt_gas_prices
+            let prices = alt_gas_prices
                 .into_iter()
                 .find(|prices| prices.asset_id == fee.asset_id())
                 .ok_or_else(|| {
                     anyhow::anyhow!("fee token {} not recognized by the chain", fee.asset_id())
-                })?
+                })?;
+
+            // An alternative fee asset that arrived over IBC is only acceptable while
+            // the client backing its channel is active: otherwise it can no longer be
+            // moved across the bridge and should not be accepted as payment, even if
+            // governance has not yet removed it from the list. Non-IBC assets are
+            // unaffected.
+            self.ensure_ibc_asset_live(&fee.asset_id())
+                .await
+                .context("alternative fee asset is not usable")?;
+
+            prices
         };
 
         // Double check that the gas price assets match.

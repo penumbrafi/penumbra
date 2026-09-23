@@ -15,6 +15,8 @@ use penumbra_sdk_stake::params::StakeParameters;
 use serde::{Deserialize, Serialize};
 
 pub mod change;
+#[cfg(feature = "component")]
+pub mod ibc_liveness;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(try_from = "pb::AppParameters", into = "pb::AppParameters")]
