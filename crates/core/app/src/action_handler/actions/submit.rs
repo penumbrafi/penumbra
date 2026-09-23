@@ -25,9 +25,8 @@ use penumbra_sdk_sct::component::tree::SctRead;
 use penumbra_sdk_shielded_pool::component::AssetRegistry;
 use penumbra_sdk_transaction::{AuthorizationData, Transaction, TransactionPlan, WitnessData};
 
-use crate::app::StateReadExt;
 use crate::community_pool_ext::CommunityPoolStateWriteExt;
-use crate::{action_handler::AppActionHandler, params::change::ParameterChangeExt as _};
+use crate::{action_handler::AppActionHandler, params::ibc_liveness::apply_parameter_change};
 
 // IMPORTANT: these length limits are enforced by consensus! Changing them will change which
 // transactions are accepted by the network, and so they *cannot* be changed without a network
@@ -162,9 +161,12 @@ impl AppActionHandler for ProposalSubmit {
                 // Check that the parameter change is valid and could be applied to the current
                 // parameters. This doesn't guarantee that it will be valid when/if it passes but
                 // ensures that clearly malformed proposals are rejected upfront.
-                let current_parameters = state.get_app_params().await?;
-                change
-                    .apply_changes(current_parameters)
+                //
+                // This includes the state-dependent check that any IBC asset named as a
+                // DEX routing candidate or alternative fee asset is backed by a live client.
+                let current_block_time = state.get_current_block_timestamp().await?;
+                apply_parameter_change(&state, change, current_block_time)
+                    .await
                     .context("proposed parameter changes do not apply to current parameters")?;
             }
             ProposalPayload::CommunityPoolSpend { transaction_plan } => {

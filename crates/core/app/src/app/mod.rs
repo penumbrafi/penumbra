@@ -43,7 +43,7 @@ use tracing::{instrument, Instrument};
 use crate::action_handler::AppActionHandler;
 use crate::event::EventAppParametersChange;
 use crate::genesis::AppState;
-use crate::params::change::ParameterChangeExt as _;
+use crate::params::ibc_liveness::apply_parameter_change;
 use crate::params::AppParameters;
 use crate::{CommunityPoolStateReadExt, PenumbraHost};
 
@@ -314,11 +314,9 @@ impl App {
             .await
             .expect("param changes should always be readable, even if unset")
         {
-            let old_params = state_tx
-                .get_app_params()
-                .await
-                .expect("must be able to read app params");
-            match change.apply_changes(old_params) {
+            // The SCT component has not recorded this block's timestamp yet either, so
+            // the IBC liveness check must be given the header time explicitly.
+            match apply_parameter_change(&state_tx, &change, begin_block.header.time).await {
                 Ok(new_params) => {
                     tracing::info!(?change, "applied app parameter change");
                     state_tx.put_app_params(new_params.clone());
