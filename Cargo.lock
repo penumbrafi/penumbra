@@ -5530,6 +5530,7 @@ dependencies = [
  "penumbra-sdk-asset",
  "penumbra-sdk-num",
  "penumbra-sdk-proto",
+ "penumbra-sdk-shielded-pool",
  "rand",
  "rand_core",
  "serde",
