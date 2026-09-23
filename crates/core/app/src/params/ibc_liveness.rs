@@ -135,6 +135,14 @@ mod tests {
         Time::parse_from_rfc3339("2026-09-23T12:00:00Z").expect("valid time")
     }
 
+    fn ago(d: Duration) -> Time {
+        (now() - d).expect("valid time")
+    }
+
+    fn ahead(d: Duration) -> Time {
+        (now() + d).expect("valid time")
+    }
+
     fn default_app_params() -> AppParameters {
         let content = genesis::Content::default().with_chain_id("penumbra-test".to_string());
         AppParameters {
@@ -166,14 +174,14 @@ mod tests {
     }
 
     /// Installs client `07-tendermint-{n}` <- `connection-{n}` <- `channel-{n}` on the
-    /// transfer port, with a latest consensus state timestamped `age` before `now()`,
+    /// transfer port, with a latest consensus state timestamped `consensus_timestamp`,
     /// and registers the denom `transfer/channel-{n}/{remote_denom}`. Returns the
     /// asset id and client id.
     async fn install_ibc_asset(
         state: &mut Arc<StateDelta<()>>,
         n: u64,
         remote_denom: &str,
-        age: Duration,
+        consensus_timestamp: Time,
         frozen: bool,
     ) -> (asset::Id, ClientId) {
         let client_id = ClientId::from_str(&format!("07-tendermint-{n}")).expect("valid");
@@ -203,7 +211,7 @@ mod tests {
             MerkleRoot {
                 hash: vec![0u8; 32],
             },
-            (now() - age).expect("valid time"),
+            consensus_timestamp,
             tendermint::Hash::Sha256([0u8; 32]),
         );
 
@@ -293,23 +301,23 @@ mod tests {
     async fn asset_status_resolves_through_channel_to_client() {
         let mut state = base_state().await;
         let (live, live_client) =
-            install_ibc_asset(&mut state, 1, "uusdc", Duration::from_secs(60), false).await;
+            install_ibc_asset(&mut state, 1, "uusdc", ago(Duration::from_secs(60)), false).await;
         let (expired, expired_client) = install_ibc_asset(
             &mut state,
             2,
             "utia",
-            TRUSTING_PERIOD + Duration::from_secs(1),
+            ago(TRUSTING_PERIOD + Duration::from_secs(1)),
             false,
         )
         .await;
         let (frozen, frozen_client) =
-            install_ibc_asset(&mut state, 3, "uosmo", Duration::from_secs(60), true).await;
+            install_ibc_asset(&mut state, 3, "uosmo", ago(Duration::from_secs(60)), true).await;
         // Colon in the remote denom must not confuse the parser.
         let (colon, _) = install_ibc_asset(
             &mut state,
             4,
             "cw20:inj19vy83ne9tzta2yqynj8yg7dq9ghca6yqn9hyej",
-            Duration::from_secs(60),
+            ago(Duration::from_secs(60)),
             false,
         )
         .await;
@@ -371,6 +379,38 @@ mod tests {
         );
     }
 
+    /// Right after a client update the latest consensus state may be timestamped
+    /// slightly after the (BFT) block time. That must read as live, not `Unknown`,
+    /// or fees in a perfectly healthy asset would be refused for a block.
+    #[tokio::test]
+    async fn consensus_state_ahead_of_block_time_is_live() {
+        let mut state = base_state().await;
+        let (fresh, fresh_client) = install_ibc_asset(
+            &mut state,
+            5,
+            "uusdc",
+            ahead(Duration::from_secs(10)),
+            false,
+        )
+        .await;
+        let (fresh_frozen, _) =
+            install_ibc_asset(&mut state, 6, "uosmo", ahead(Duration::from_secs(10)), true).await;
+
+        assert_eq!(
+            state.ibc_asset_status(&fresh, now()).await.unwrap(),
+            IbcAssetStatus::Live {
+                channel_id: ChannelId::new(5),
+                client_id: fresh_client
+            }
+        );
+        // Frozen still wins over freshness.
+        assert!(state
+            .ibc_asset_status(&fresh_frozen, now())
+            .await
+            .unwrap()
+            .is_dead());
+    }
+
     #[tokio::test]
     async fn parameter_change_with_expired_client_is_rejected() {
         let mut state = base_state().await;
@@ -378,7 +418,7 @@ mod tests {
             &mut state,
             3,
             "utia",
-            TRUSTING_PERIOD + Duration::from_secs(1),
+            ago(TRUSTING_PERIOD + Duration::from_secs(1)),
             false,
         )
         .await;
@@ -419,7 +459,7 @@ mod tests {
     async fn parameter_change_with_active_client_is_accepted() {
         let mut state = base_state().await;
         let (live, _) =
-            install_ibc_asset(&mut state, 2, "uusdc", Duration::from_secs(60), false).await;
+            install_ibc_asset(&mut state, 2, "uusdc", ago(Duration::from_secs(60)), false).await;
         let unknown_non_ibc = asset::REGISTRY.parse_denom("unotonchain").unwrap().id();
 
         let change = change_naming(
@@ -445,17 +485,17 @@ mod tests {
 
         let mut state = base_state().await;
         let (live, _) =
-            install_ibc_asset(&mut state, 2, "uusdc", Duration::from_secs(60), false).await;
+            install_ibc_asset(&mut state, 2, "uusdc", ago(Duration::from_secs(60)), false).await;
         let (expired, _) = install_ibc_asset(
             &mut state,
             3,
             "utia",
-            TRUSTING_PERIOD + Duration::from_secs(1),
+            ago(TRUSTING_PERIOD + Duration::from_secs(1)),
             false,
         )
         .await;
         let (frozen, _) =
-            install_ibc_asset(&mut state, 4, "uosmo", Duration::from_secs(60), true).await;
+            install_ibc_asset(&mut state, 4, "uosmo", ago(Duration::from_secs(60)), true).await;
         let unknown_non_ibc = asset::REGISTRY.parse_denom("unotonchain").unwrap().id();
 
         let mut params = default_app_params();
@@ -487,12 +527,12 @@ mod tests {
     async fn pay_fee_rejects_alt_fee_asset_with_expired_client() {
         let mut state = base_state().await;
         let (live, _) =
-            install_ibc_asset(&mut state, 2, "uusdc", Duration::from_secs(60), false).await;
+            install_ibc_asset(&mut state, 2, "uusdc", ago(Duration::from_secs(60)), false).await;
         let (expired, expired_client) = install_ibc_asset(
             &mut state,
             3,
             "utia",
-            TRUSTING_PERIOD + Duration::from_secs(1),
+            ago(TRUSTING_PERIOD + Duration::from_secs(1)),
             false,
         )
         .await;

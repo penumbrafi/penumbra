@@ -308,11 +308,14 @@ pub trait StateReadExt: StateRead {
 
         let latest_consensus_state = latest_consensus_state.expect("latest consensus state is Ok");
 
-        let time_elapsed = current_block_time.duration_since(latest_consensus_state.timestamp);
-        if time_elapsed.is_err() {
-            return ClientStatus::Unknown;
-        }
-        let time_elapsed = time_elapsed.expect("time elapsed is Ok");
+        // A consensus state timestamped *after* the current block time is possible
+        // right after a client update, since verified headers may lead the (BFT)
+        // block time by up to `max_clock_drift`. Such a state has trivially not
+        // aged past the trusting period, so treat it as zero elapsed time, as
+        // ibc-go does, rather than reporting `Unknown`.
+        let time_elapsed = current_block_time
+            .duration_since(latest_consensus_state.timestamp)
+            .unwrap_or_default();
 
         if client_state.expired(time_elapsed) {
             return ClientStatus::Expired;
