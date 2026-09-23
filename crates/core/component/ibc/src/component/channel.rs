@@ -11,7 +11,11 @@ use ibc_types::path::{
 
 use cnidarium::{StateRead, StateWrite};
 use ibc_types::core::channel::{ChannelEnd, ChannelId, Packet, PortId};
+use ibc_types::core::client::ClientId;
 use penumbra_sdk_proto::{StateReadProto, StateWriteProto};
+
+use super::client::{ClientStatus, StateReadExt as _};
+use super::connection::StateReadExt as _;
 
 // Note: many of the methods on this trait need to write raw bytes,
 // because the data they write is interpreted by counterparty chains.
@@ -123,6 +127,37 @@ pub trait StateReadExt: StateRead {
                 .apply_string(ChannelEndPath::new(port_id, channel_id).to_string()),
         )
         .await
+    }
+
+    /// Resolves the light client backing `channel_id` on `port_id` (through the
+    /// channel's first connection hop) and returns its identifier together with
+    /// its [`ClientStatus`] as of `current_block_time`.
+    ///
+    /// Returns `Ok(None)` if the channel does not exist, has no connection hops, or
+    /// its connection does not exist: in each of those cases there is no client to
+    /// speak of, and callers should treat the channel as unusable.
+    ///
+    /// This mirrors the checks performed before sending a packet (see
+    /// `packet.rs`), and is intended for consensus use: it only reads verifiable
+    /// state and the caller-supplied block time.
+    async fn get_channel_client_status(
+        &self,
+        channel_id: &ChannelId,
+        port_id: &PortId,
+        current_block_time: tendermint::Time,
+    ) -> Result<Option<(ClientId, ClientStatus)>> {
+        let Some(channel) = self.get_channel(channel_id, port_id).await? else {
+            return Ok(None);
+        };
+        let Some(connection_id) = channel.connection_hops.first() else {
+            return Ok(None);
+        };
+        let Some(connection) = self.get_connection(connection_id).await? else {
+            return Ok(None);
+        };
+        let client_id = connection.client_id;
+        let status = self.get_client_status(&client_id, current_block_time).await;
+        Ok(Some((client_id, status)))
     }
 
     async fn get_recv_sequence(&self, channel_id: &ChannelId, port_id: &PortId) -> Result<u64> {
