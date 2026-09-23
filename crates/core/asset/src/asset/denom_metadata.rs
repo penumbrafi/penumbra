@@ -388,6 +388,16 @@ impl Metadata {
         let base_denom = self.base_denom().denom;
         parse::ibc_transfer_path(&base_denom)
     }
+
+    /// Returns the identifier of the *local* ICS-20 channel this asset was
+    /// received over (e.g. `channel-2` for `transfer/channel-2/uusdc`), or
+    /// `None` if the base denom is not an ICS-20 transfer denom.
+    ///
+    /// Unlike [`Metadata::best_effort_ibc_transfer_parse`], this is a strict,
+    /// consensus-safe parser: see [`parse::ibc_local_channel`].
+    pub fn ibc_transfer_channel(&self) -> Option<String> {
+        parse::ibc_local_channel(&self.inner.base_denom).map(str::to_owned)
+    }
 }
 
 impl From<Metadata> for Id {
@@ -600,6 +610,105 @@ pub mod parse {
         // - transfer/channel-4/gamm/pool/1402
         let caps = IBC_RE.captures(base)?;
         Some((caps["path"].to_owned(), caps["denom"].to_owned()))
+    }
+
+    /// The port every ICS-20 transfer denom on Penumbra is prefixed with.
+    pub const ICS20_TRANSFER_PORT: &str = "transfer";
+
+    /// Strictly extracts the *local* channel identifier from an ICS-20 transfer
+    /// base denom of the form `transfer/channel-N/<remote denom>`.
+    ///
+    /// This is intended for consensus-critical use (unlike [`ibc_transfer_path`]):
+    /// it does not use a regex, it places no restriction on the character set of
+    /// the remote denom (which may contain `:` or further `/`-separated hops), and
+    /// it only accepts canonical channel identifiers (`channel-` followed by a
+    /// decimal `u64` without leading zeros), mirroring how the ICS-20 handler
+    /// prefixes incoming denoms with `transfer/{source_channel}/`.
+    ///
+    /// Only the first hop matters: for a multi-hop denom such as
+    /// `transfer/channel-0/transfer/08-wasm-1369/0x...`, the local channel is
+    /// `channel-0`.
+    pub fn ibc_local_channel(base: &str) -> Option<&str> {
+        let mut parts = base.splitn(3, '/');
+        let port = parts.next()?;
+        let channel = parts.next()?;
+        let remote_denom = parts.next()?;
+
+        if port != ICS20_TRANSFER_PORT || remote_denom.is_empty() {
+            return None;
+        }
+
+        let digits = channel.strip_prefix("channel-")?;
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        // Reject non-canonical encodings (leading zeros, overflow) so that a
+        // denom can never alias a different channel than the one it names.
+        let n: u64 = digits.parse().ok()?;
+        if n.to_string() != digits {
+            return None;
+        }
+
+        Some(channel)
+    }
+}
+
+#[cfg(test)]
+mod ibc_local_channel_tests {
+    use crate::asset::denom_metadata::parse::ibc_local_channel as p;
+
+    #[test]
+    fn single_hop() {
+        assert_eq!(p("transfer/channel-2/uusdc"), Some("channel-2"));
+        assert_eq!(p("transfer/channel-0/uatom"), Some("channel-0"));
+        assert_eq!(p("transfer/channel-18/inj"), Some("channel-18"));
+    }
+
+    #[test]
+    fn remote_denom_with_colon() {
+        // cw20 / erc20 style denoms carry a `:` that the best-effort regex rejects.
+        assert_eq!(
+            p("transfer/channel-18/cw20:inj19vy83ne9tzta2yqynj8yg7dq9ghca6yqn9hyej"),
+            Some("channel-18")
+        );
+        assert_eq!(
+            p("transfer/channel-0/erc20:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"),
+            Some("channel-0")
+        );
+        assert_eq!(p("transfer/channel-4/a:b:c"), Some("channel-4"));
+    }
+
+    #[test]
+    fn remote_denom_with_slashes_and_multihop() {
+        assert_eq!(
+            p("transfer/channel-4/factory/osmo1q77cw0mmlluxu0wr29fcdd0tdnh78gzhkvhe4n6ulal9qvrtu43qtd0nh8/shitmos"),
+            Some("channel-4")
+        );
+        assert_eq!(p("transfer/channel-4/gamm/pool/1402"), Some("channel-4"));
+        assert_eq!(
+            p("transfer/channel-0/transfer/08-wasm-1369/0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"),
+            Some("channel-0")
+        );
+    }
+
+    #[test]
+    fn non_ibc_denoms() {
+        assert_eq!(p("upenumbra"), None);
+        assert_eq!(p("cw20:inj19vy83ne9tzta2yqynj8yg7dq9ghca6yqn9hyej"), None);
+        assert_eq!(p("udelegation_penumbravalid1abc"), None);
+        assert_eq!(p("lpnft_opened_plpid1abc"), None);
+        // Wrong port.
+        assert_eq!(p("ics20/channel-0/uatom"), None);
+        // Not a canonical channel identifier.
+        assert_eq!(p("transfer/channel-/uatom"), None);
+        assert_eq!(p("transfer/channel-007/uatom"), None);
+        assert_eq!(p("transfer/channel-x/uatom"), None);
+        assert_eq!(p("transfer/07-tendermint-0/uatom"), None);
+        // Missing remote denom.
+        assert_eq!(p("transfer/channel-0"), None);
+        assert_eq!(p("transfer/channel-0/"), None);
+        assert_eq!(p("transfer"), None);
+        assert_eq!(p(""), None);
     }
 }
 
