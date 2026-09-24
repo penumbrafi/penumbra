@@ -337,6 +337,12 @@ message TransactionPlannerRequest {
   repeated ActionDutchAuctionWithdraw dutch_auction_withdraw_actions = 75;
   repeated DelegatorVote delegator_votes = 76;
   repeated ActionLiquidityTournamentVote action_liquidity_tournament_vote = 77;
+  // Governance proposal lifecycle, planned by the view service so wallets
+  // can submit, withdraw and reclaim proposals without building plans
+  // themselves. The planner funds the deposit and produces the proposal NFTs.
+  repeated core.component.governance.v1.ProposalSubmit proposal_submits = 78;
+  repeated core.component.governance.v1.ProposalWithdraw proposal_withdraws = 79;
+  repeated core.component.governance.v1.ProposalDepositClaim proposal_deposit_claims = 80;
 
   // Specifies either that the planner should compute fees automatically or that it should use a fixed fee amount.
   oneof fee_mode {

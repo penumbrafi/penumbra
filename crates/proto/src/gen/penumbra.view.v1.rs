@@ -464,6 +464,21 @@ pub struct TransactionPlannerRequest {
     pub action_liquidity_tournament_vote: ::prost::alloc::vec::Vec<
         transaction_planner_request::ActionLiquidityTournamentVote,
     >,
+    /// Governance proposal lifecycle, planned by the view service so wallets
+    /// can submit, withdraw and reclaim proposals without building plans
+    /// themselves. The planner funds the deposit and produces the proposal NFTs.
+    #[prost(message, repeated, tag = "78")]
+    pub proposal_submits: ::prost::alloc::vec::Vec<
+        super::super::core::component::governance::v1::ProposalSubmit,
+    >,
+    #[prost(message, repeated, tag = "79")]
+    pub proposal_withdraws: ::prost::alloc::vec::Vec<
+        super::super::core::component::governance::v1::ProposalWithdraw,
+    >,
+    #[prost(message, repeated, tag = "80")]
+    pub proposal_deposit_claims: ::prost::alloc::vec::Vec<
+        super::super::core::component::governance::v1::ProposalDepositClaim,
+    >,
     /// The epoch index of the transaction being planned.
     #[deprecated]
     #[prost(uint64, tag = "200")]

@@ -33,6 +33,7 @@ use penumbra_sdk_dex::{
     TradingPair,
 };
 use penumbra_sdk_fee::Fee;
+use penumbra_sdk_governance::{ProposalDepositClaim, ProposalSubmit, ProposalWithdraw};
 use penumbra_sdk_keys::{
     keys::WalletId,
     keys::{AddressIndex, FullViewingKey},
@@ -758,6 +759,39 @@ impl ViewService for ViewServer {
                 })?;
 
             planner.position_withdraw(position_id, reserves, trading_pair, 0);
+        }
+
+        for proposal_submit in prq.proposal_submits {
+            let ProposalSubmit {
+                proposal,
+                deposit_amount,
+            } = proposal_submit.try_into().map_err(|e| {
+                tonic::Status::invalid_argument(format!("Could not parse proposal submit: {e:#}"))
+            })?;
+            planner.proposal_submit(proposal, deposit_amount);
+        }
+
+        for proposal_withdraw in prq.proposal_withdraws {
+            let ProposalWithdraw { proposal, reason } =
+                proposal_withdraw.try_into().map_err(|e| {
+                    tonic::Status::invalid_argument(format!(
+                        "Could not parse proposal withdraw: {e:#}"
+                    ))
+                })?;
+            planner.proposal_withdraw(proposal, reason);
+        }
+
+        for proposal_deposit_claim in prq.proposal_deposit_claims {
+            let ProposalDepositClaim {
+                proposal,
+                deposit_amount,
+                outcome,
+            } = proposal_deposit_claim.try_into().map_err(|e| {
+                tonic::Status::invalid_argument(format!(
+                    "Could not parse proposal deposit claim: {e:#}"
+                ))
+            })?;
+            planner.proposal_deposit_claim(proposal, deposit_amount, outcome);
         }
 
         // Insert any ICS20 withdrawals.
