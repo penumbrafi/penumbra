@@ -219,7 +219,7 @@ pub trait ClientRecoveryExt: StateWrite + ConsensusStateWriteExt {
         let substitute_consensus_state = self
             .get_verified_consensus_state(
                 &substitute_client_state.latest_height(),
-                &substitute_client_id,
+                substitute_client_id,
             )
             .await?;
 
@@ -231,7 +231,7 @@ pub trait ClientRecoveryExt: StateWrite + ConsensusStateWriteExt {
         )
         .await?;
 
-        self.put_client(&subject_client_id, substitute_client_state);
+        self.put_client(subject_client_id, substitute_client_state);
 
         tracing::info!(
             subject = %subject_client_id,

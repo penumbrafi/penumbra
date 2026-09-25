@@ -532,9 +532,12 @@ async fn main() -> anyhow::Result<()> {
                         .context("failed to perform IBC client recovery")?;
                 }
                 Some(MigrateCommand::Mainnet6) => {
-                    tracing::info!("performing mainnet-6 migration");
+                    // Every validator must write the same genesis.json, so the genesis
+                    // time comes from the halted chain's last block, never the wall clock.
+                    let genesis_start = pd::migrate::last_block_timestamp(pd_home.clone()).await?;
+                    tracing::info!(?genesis_start, "performing mainnet-6 migration");
                     Mainnet6
-                        .migrate(pd_home, comet_home, None, force)
+                        .migrate(pd_home, comet_home, Some(genesis_start), force)
                         .instrument(pd_migrate_span)
                         .await
                         .context("failed to perform mainnet-6 migration")?;
