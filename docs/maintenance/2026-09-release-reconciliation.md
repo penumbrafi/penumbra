@@ -91,13 +91,13 @@ hash above stays resolvable.
 
 `v2.0.7` (`918fdff7c`) and `v2.0.8` (`009fc3de9`) existed only on the
 rotkonetworks fork. Their commits are already on penumbrafi
-(`prune/2.0.x`); the tags are added to penumbrafi unchanged.
+(`prune/2.0.x`); the tags were added to penumbrafi unchanged on 2026-09-25.
 
 ## Branches after reconciliation
 
 | Branch | Role |
 |---|---|
-| `release/v2.0.x` | What penumbra-1 runs. Fast-forwarded to v2.0.13 (it was left at v2.0.6). Consensus-compatible fixes only. |
+| `release/v2.0.x` | What penumbra-1 runs. Fast-forwarded on 2026-09-25 from v2.0.6 (`f833ace04`) to `4232d1dc0` (v2.0.13 plus fork metadata and the CI revert to upstream release.yml). Consensus-compatible fixes only. |
 | `main` | Next consensus version, the 2.1 line: upstream v2.1.1 with `release/v2.0.x` merged in (a merge, so all 2.0 tags stay reachable). |
 | `release/v2.1.x` | Cut from `main` when 2.1.2 is released. |
 
