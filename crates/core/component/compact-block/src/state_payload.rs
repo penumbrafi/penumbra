@@ -126,9 +126,7 @@ impl TryFrom<pb::StatePayload> for StatePayload {
         // unknown-origin commitment marker (see CommitmentSource::transaction()
         // in penumbra-sdk-sct).
         let source = match value.source {
-            Some(s) => s
-                .try_into()
-                .context("could not parse commitment source")?,
+            Some(s) => s.try_into().context("could not parse commitment source")?,
             None => {
                 tracing::trace!("state payload missing source, treating as stripped transaction");
                 CommitmentSource::Transaction { id: None }
