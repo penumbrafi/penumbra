@@ -14,9 +14,9 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-
 # The installers to generate for each app
 installers = ["shell"]
 # Which actions to run on pull requests
-# TEMPORARY: "upload" builds every artifact on this PR without publishing.
-# Set back to "skip" before merging.
-pr-run-mode = "upload"
+# "skip" on pull requests: only `dist plan` runs. To test a release build
+# without publishing, set "upload" on the PR (see #38).
+pr-run-mode = "skip"
 # Skip checking whether the specified configuration files are up to date
 allow-dirty = ["ci"]
 # Whether to install an updater program
