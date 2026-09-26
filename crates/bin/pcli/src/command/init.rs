@@ -1,5 +1,5 @@
 use std::{
-    io::{stdin, IsTerminal as _, Read, Write},
+    io::{stdin, Read, Write},
     str::FromStr,
 };
 
@@ -97,25 +97,25 @@ pub enum SoftKmsInitCmd {
         #[clap(long, action)]
         legacy_raw_bip39_derivation: bool,
     },
+    /// Import a spend key directly, in bech32m form (`penumbraspendkey1...`).
+    ///
+    /// This is the `spend_key` field of an existing `config.toml` written by a
+    /// soft-kms configuration. Use this when you hold the spend key itself
+    /// rather than the seed phrase it was derived from: the key is imported
+    /// verbatim, with no BIP39/BIP44 derivation applied.
+    #[clap(display_order = 300)]
+    ImportKey {},
 }
 
 // Reusable function for prompting interactively for key material.
+//
+// This reads a single line, so that when input is piped, any password prompts
+// that follow (e.g. for `--encrypted`) can be fed by subsequent lines.
 fn prompt_for_password(msg: &str) -> Result<String> {
-    let mut password = String::new();
-    // The `rpassword` crate doesn't support reading from stdin, so we check
-    // for an interactive session. We must support non-interactive use cases,
-    // for integration with other tooling.
-    if std::io::stdin().is_terminal() {
-        password = rpassword::prompt_password(msg)?;
-    } else {
-        while let Ok(n_bytes) = std::io::stdin().lock().read_to_string(&mut password) {
-            if n_bytes == 0 {
-                break;
-            }
-            password = password.trim().to_string();
-        }
+    match crate::terminal::read_stdin_line(msg)? {
+        Some(line) => Ok(line.trim().to_string()),
+        None => anyhow::bail!("unexpected end of input while reading key material"),
     }
-    Ok(password)
 }
 
 impl SoftKmsInitCmd {
@@ -159,6 +159,12 @@ impl SoftKmsInitCmd {
                     let path = Bip44Path::new(0);
                     SpendKey::from_seed_phrase_bip44(seed_phrase, &path)
                 }
+            }
+            SoftKmsInitCmd::ImportKey {} => {
+                let spend_key = prompt_for_password("Enter spend key: ")?;
+                SpendKey::from_str(&spend_key).context(
+                    "failed to parse input as spend key (expected bech32m `penumbraspendkey1...`)",
+                )?
             }
         })
     }

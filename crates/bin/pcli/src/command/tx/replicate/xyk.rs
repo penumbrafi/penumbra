@@ -14,6 +14,7 @@ use penumbra_sdk_view::{Planner, ViewClient};
 
 use crate::dex_utils;
 use crate::dex_utils::replicate::debug;
+use crate::network::progress;
 use crate::{warning, App};
 
 #[derive(Debug, Clone, clap::Args)]
@@ -38,6 +39,7 @@ pub struct ConstantProduct {
 
 impl ConstantProduct {
     pub async fn exec(&self, app: &mut App) -> anyhow::Result<()> {
+        let json = app.json_output();
         self.validate()?;
         let pair = self.pair.clone();
         let current_price =
@@ -78,27 +80,45 @@ impl ConstantProduct {
         {
             return Ok(());
         }
-        println!("\nso it shall be...\n\n");
-        println!(
-            "#################################################################################"
+        progress(json, format_args!("\nso it shall be...\n\n"));
+        progress(
+            json,
+            format_args!(
+                "#################################################################################"
+            ),
         );
-        println!(
-            "########################### LIQUIDITY SUMMARY ###################################"
+        progress(
+            json,
+            format_args!(
+                "########################### LIQUIDITY SUMMARY ###################################"
+            ),
         );
-        println!(
-            "#################################################################################"
+        progress(
+            json,
+            format_args!(
+                "#################################################################################"
+            ),
         );
-        println!("\nYou want to provide liquidity on the pair {}", pair);
-        println!("You will need:",);
-        println!(" -> {amount_start}{}", pair.start);
-        println!(" -> {amount_end}{}", pair.end);
+        progress(
+            json,
+            format_args!("\nYou want to provide liquidity on the pair {}", pair),
+        );
+        progress(json, format_args!("You will need:"));
+        progress(json, format_args!(" -> {amount_start}{}", pair.start));
+        progress(json, format_args!(" -> {amount_end}{}", pair.end));
         // TODO(erwan): would be nice to print current balance?
 
-        println!("You will create the following positions:");
+        progress(
+            json,
+            format_args!("You will create the following positions:"),
+        );
         let asset_cache = app.view().assets().await?;
-        println!(
-            "{}",
-            crate::command::utils::render_positions(&asset_cache, &positions),
+        progress(
+            json,
+            format_args!(
+                "{}",
+                crate::command::utils::render_positions(&asset_cache, &positions),
+            ),
         );
 
         if let Some(debug_file) = &self.debug_file {
@@ -108,6 +128,7 @@ impl ConstantProduct {
                 self.input.clone(),
                 current_price,
                 positions.clone(),
+                json,
             )?;
             return Ok(());
         }
@@ -145,8 +166,23 @@ impl ConstantProduct {
                 AddressIndex::new(self.source),
             )
             .await?;
+        if json {
+            // The position ids are fixed by the replication, so they are known
+            // before the transaction is submitted; the positions only exist on
+            // chain once it confirms, which the `confirmed` event reports.
+            for position in &positions {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "created",
+                        "position_id": position.id().to_string(),
+                    })
+                );
+            }
+        }
+
         let tx_id = app.build_and_submit_transaction(plan).await?;
-        println!("posted with transaction id: {tx_id}");
+        progress(json, format_args!("posted with transaction id: {tx_id}"));
 
         Ok(())
     }
@@ -174,6 +210,7 @@ impl ConstantProduct {
         input: Value,
         current_price: f64,
         positions: Vec<Position>,
+        json: bool,
     ) -> anyhow::Result<()> {
         // Ad-hoc denom scaling for debug data:
         let alphas = dex_utils::replicate::xyk::sample_prices(
@@ -197,9 +234,9 @@ impl ConstantProduct {
 
         let r2 = r1 * current_price;
         let total_k = r1 * r2;
-        println!("Entry R1: {r1}");
-        println!("Entry R2: {r2}");
-        println!("total K: {total_k}");
+        progress(json, format_args!("Entry R1: {r1}"));
+        progress(json, format_args!("Entry R2: {r2}"));
+        progress(json, format_args!("total K: {total_k}"));
 
         let debug_positions: Vec<debug::PayoffPositionEntry> = positions
             .iter()

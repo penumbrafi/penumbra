@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::command::tx::FeeTier;
+use crate::network::progress;
 use crate::App;
 use anyhow::Result;
 use anyhow::{anyhow, bail, Context};
@@ -140,6 +141,7 @@ pub enum DutchCmd {
 impl DutchCmd {
     /// Process the command by performing the appropriate action.
     pub async fn exec(&self, app: &mut App) -> anyhow::Result<()> {
+        let json = app.json_output();
         let gas_prices = app
             .view
             .as_mut()
@@ -170,19 +172,24 @@ impl DutchCmd {
                 let min_output = min_output.parse::<Value>()?;
                 let output_id = max_output.asset_id;
 
+                let description = DutchAuctionDescription {
+                    input,
+                    output_id,
+                    max_output: max_output.amount,
+                    min_output: min_output.amount,
+                    start_height: *start_height,
+                    end_height: *end_height,
+                    step_count: *step_count,
+                    nonce,
+                };
+                // The auction id is fixed by the description, so it is known
+                // before the transaction is built and submitted.
+                let auction_id = description.id();
+
                 let plan = Planner::new(OsRng)
                     .set_gas_prices(gas_prices)
                     .set_fee_tier((*fee_tier).into())
-                    .dutch_auction_schedule(DutchAuctionDescription {
-                        input,
-                        output_id,
-                        max_output: max_output.amount,
-                        min_output: min_output.amount,
-                        start_height: *start_height,
-                        end_height: *end_height,
-                        step_count: *step_count,
-                        nonce,
-                    })
+                    .dutch_auction_schedule(description)
                     .plan(
                         app.view
                             .as_mut()
@@ -191,6 +198,17 @@ impl DutchCmd {
                     )
                     .await
                     .context("can't build auction schedule transaction")?;
+
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "created",
+                            "auction_id": auction_id.to_string(),
+                        })
+                    );
+                }
+
                 app.build_and_submit_transaction(plan).await?;
                 Ok(())
             }
@@ -210,7 +228,7 @@ impl DutchCmd {
                 };
 
                 if auction_ids.is_empty() {
-                    println!("no active auctions to end");
+                    progress(json, format_args!("no active auctions to end"));
                     return Ok(());
                 }
 
@@ -218,15 +236,30 @@ impl DutchCmd {
                 let batches = auction_ids.chunks(*batch as usize);
                 let num_batches = &batches.len();
                 for (batch_num, auction_batch) in batches.enumerate() {
-                    println!(
-                        "processing batch {} of {}, starting with {}",
-                        batch_num + 1,
-                        num_batches,
-                        batch_num * *batch as usize
+                    progress(
+                        json,
+                        format_args!(
+                            "processing batch {} of {}, starting with {}",
+                            batch_num + 1,
+                            num_batches,
+                            batch_num * *batch as usize
+                        ),
                     );
 
                     if auction_batch.is_empty() {
                         continue;
+                    }
+
+                    if json {
+                        for auction_id in auction_batch {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "event": "ended",
+                                    "auction_id": auction_id.to_string(),
+                                })
+                            );
+                        }
                     }
 
                     let mut planner = Planner::new(OsRng);
@@ -286,7 +319,7 @@ impl DutchCmd {
                 };
 
                 if auctions.is_empty() {
-                    println!("no ended auctions to withdraw");
+                    progress(json, format_args!("no ended auctions to withdraw"));
                     return Ok(());
                 }
 
@@ -294,14 +327,29 @@ impl DutchCmd {
                 let num_batches = &batches.len();
                 // Process auctions in batches
                 for (batch_num, auction_batch) in batches.enumerate() {
-                    println!(
-                        "processing batch {} of {}, starting with {}",
-                        batch_num + 1,
-                        num_batches,
-                        batch_num * *batch as usize
+                    progress(
+                        json,
+                        format_args!(
+                            "processing batch {} of {}, starting with {}",
+                            batch_num + 1,
+                            num_batches,
+                            batch_num * *batch as usize
+                        ),
                     );
                     if auction_batch.is_empty() {
                         continue;
+                    }
+
+                    if json {
+                        for auction in auction_batch {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "event": "withdrawn",
+                                    "auction_id": auction.description.id().to_string(),
+                                })
+                            );
+                        }
                     }
 
                     let mut planner = Planner::new(OsRng);
@@ -336,7 +384,7 @@ impl DutchCmd {
                 fee_tier,
                 debug,
             } => {
-                println!("Gradual dutch auction prototype");
+                progress(json, format_args!("Gradual dutch auction prototype"));
 
                 let input = input_str.parse::<Value>()?;
                 let max_output = max_output_str.parse::<Value>()?;
@@ -359,10 +407,10 @@ impl DutchCmd {
                 let max_output_fmt = max_output.format(&asset_cache);
                 let min_output_fmt = min_output.format(&asset_cache);
 
-                println!("total to auction: {input_fmt}");
-                println!("start price: {max_output_fmt}");
-                println!("end price: {min_output_fmt}");
-                display_auction_description(&asset_cache, auction_descriptions.clone());
+                progress(json, format_args!("total to auction: {input_fmt}"));
+                progress(json, format_args!("start price: {max_output_fmt}"));
+                progress(json, format_args!("end price: {min_output_fmt}"));
+                display_auction_description(json, &asset_cache, auction_descriptions.clone());
 
                 let mut planner = Planner::new(OsRng);
                 planner
@@ -410,13 +458,28 @@ impl DutchCmd {
                     .0
                     .format(&asset_cache);
 
-                println!("Total fee: {fee_fmt}");
+                progress(json, format_args!("Total fee: {fee_fmt}"));
 
                 if !yes {
                     Confirm::new()
                         .with_prompt("Do you wish to proceed")
                         .interact()?;
                 }
+
+                if json {
+                    // Each auction id is fixed by its description, so every id is
+                    // known before the transaction is built and submitted.
+                    for description in &auction_descriptions {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "created",
+                                "auction_id": description.id().to_string(),
+                            })
+                        );
+                    }
+                }
+
                 app.build_and_submit_transaction(plan).await?;
 
                 Ok(())
@@ -504,7 +567,11 @@ async fn auctions_to_withdraw(
     Ok(auction_ids)
 }
 
-fn display_auction_description(asset_cache: &Cache, auctions: Vec<DutchAuctionDescription>) {
+fn display_auction_description(
+    json: bool,
+    asset_cache: &Cache,
+    auctions: Vec<DutchAuctionDescription>,
+) {
     let mut tally_max_output = Amount::zero();
     let mut tally_min_output = Amount::zero();
     let mut tally_input = Amount::zero();
@@ -560,7 +627,7 @@ fn display_auction_description(asset_cache: &Cache, auctions: Vec<DutchAuctionDe
         ]);
     }
 
-    println!("{}", table);
+    progress(json, format_args!("{}", table));
 
     let tally_input_fmt = Value {
         asset_id: input_id,
@@ -580,7 +647,13 @@ fn display_auction_description(asset_cache: &Cache, auctions: Vec<DutchAuctionDe
     }
     .format(&asset_cache);
 
-    println!("Total auctioned: {tally_input_fmt}");
-    println!("Total max output: {tally_output_max_fmt}");
-    println!("Total min output: {tally_output_min_fmt}");
+    progress(json, format_args!("Total auctioned: {tally_input_fmt}"));
+    progress(
+        json,
+        format_args!("Total max output: {tally_output_max_fmt}"),
+    );
+    progress(
+        json,
+        format_args!("Total min output: {tally_output_min_fmt}"),
+    );
 }

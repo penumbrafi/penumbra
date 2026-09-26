@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rand_core::OsRng;
 
+use crate::opt::OutputFormat;
 use penumbra_sdk_keys::{Address, FullViewingKey};
 
 #[derive(Debug, clap::Parser)]
@@ -22,7 +23,7 @@ impl NobleAddressCmd {
         true
     }
 
-    pub fn exec(&self, fvk: &FullViewingKey) -> Result<()> {
+    pub fn exec(&self, fvk: &FullViewingKey, output: OutputFormat) -> Result<()> {
         let index: Result<u32, _> = self.address_or_index.parse();
 
         let address = if let Ok(index) = index {
@@ -45,7 +46,14 @@ impl NobleAddressCmd {
 
         let noble_address = address.noble_forwarding_address(&self.channel);
 
-        println!("{}", noble_address);
+        if output == OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({ "noble_address": noble_address.to_string() })
+            );
+        } else {
+            println!("{}", noble_address);
+        }
 
         Ok(())
     }

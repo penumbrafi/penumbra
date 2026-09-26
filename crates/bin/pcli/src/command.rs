@@ -69,6 +69,79 @@ pub enum Command {
 }
 
 impl Command {
+    /// The command as a caller would type it, for diagnostics.
+    pub fn path(&self) -> &'static str {
+        match self {
+            Command::Init(_) => "init",
+            Command::Query(QueryCmd::Tx(_)) => "q tx",
+            Command::Query(_) => "q <subcommand>",
+            Command::View(v) => match v {
+                ViewCmd::Address(_) => "v address",
+                ViewCmd::Balance(_) => "v balance",
+                ViewCmd::Auction(_) => "v auction",
+                ViewCmd::WalletId(_) => "v wallet-id",
+                ViewCmd::Tx(_) => "v tx",
+                ViewCmd::ListTransactionHashes(_) => "v transaction-hashes",
+                ViewCmd::Sync => "v sync",
+                ViewCmd::Reset(_) => "v reset",
+                ViewCmd::NobleAddress(_) => "v noble-address",
+                ViewCmd::Staked(_) => "v staked",
+                ViewCmd::LiquidityPositions(_) => "v lps",
+            },
+            Command::Transaction(_) => "tx",
+            Command::Threshold(_) => "threshold",
+            Command::Migrate(_) => "migrate",
+            Command::Validator(_) => "validator",
+            Command::Debug(_) => "debug",
+        }
+    }
+
+    /// Reject an output format this command cannot honour.
+    ///
+    /// Deny by default, and check it before any work happens. A `--output
+    /// json` that quietly prints the human table is worse than an error: the
+    /// caller parses prose believing it is JSON — and gets amounts carrying
+    /// display-unit suffixes (`1.727mpenumbra`) where it expected integers.
+    /// A command is listed here when it actually writes the format.
+    ///
+    /// `v sync`, `v reset` and the `tx` subcommands that only print a plan or
+    /// a prompt have no JSON form yet, and say so instead of pretending.
+    pub fn check_output(&self, fmt: Option<crate::opt::OutputFormat>) -> anyhow::Result<()> {
+        let Some(fmt) = fmt else { return Ok(()) };
+        let supported = matches!(
+            (self, fmt),
+            (
+                Command::Query(QueryCmd::Tx(_)),
+                crate::opt::OutputFormat::Json | crate::opt::OutputFormat::Base64
+            ) | (
+                Command::View(
+                    ViewCmd::Balance(_)
+                        | ViewCmd::Address(_)
+                        | ViewCmd::Auction(_)
+                        | ViewCmd::WalletId(_)
+                        | ViewCmd::Tx(_)
+                        | ViewCmd::ListTransactionHashes(_)
+                        | ViewCmd::NobleAddress(_)
+                        | ViewCmd::Staked(_)
+                        | ViewCmd::LiquidityPositions(_)
+                ),
+                crate::opt::OutputFormat::Json
+            ) | (Command::Transaction(_), crate::opt::OutputFormat::Json)
+        );
+        if supported {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "pcli {} does not support --output {}",
+            self.path(),
+            match fmt {
+                crate::opt::OutputFormat::Text => "text",
+                crate::opt::OutputFormat::Json => "json",
+                crate::opt::OutputFormat::Base64 => "base64",
+            }
+        )
+    }
+
     /// Determine if this command can run in "offline" mode.
     pub fn offline(&self) -> bool {
         match self {

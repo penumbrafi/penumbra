@@ -586,6 +586,8 @@ async fn main() -> anyhow::Result<()> {
                 yes,
                 unverified,
                 i_understand_this_drops_per_chunk_verification,
+                compact_source,
+                i_understand_source_compaction_modifies_source,
             }) = migration_type
             {
                 // `--unverified` is a foot-gun for anyone restoring an archive
@@ -602,6 +604,29 @@ async fn main() -> anyhow::Result<()> {
                     );
                     exit(2)
                 }
+                // Mirror the same guard for `--compact-source`: this rewrites
+                // SSTs in the source, so an interrupted run leaves the source
+                // no longer bit-identical to its pre-run state.
+                if compact_source && !i_understand_source_compaction_modifies_source {
+                    eprintln!(
+                        "--compact-source rewrites SSTs in the source database. \
+                         If the prune is aborted mid-way the source is no longer \
+                         bit-identical to the pre-run state (it remains a consistent \
+                         RocksDB, just compacted). Add \
+                         --i-understand-source-compaction-modifies-source to proceed."
+                    );
+                    exit(2)
+                }
+                // Live-node compaction corrupts the tree. Refuse it explicitly
+                // even before the preflight prints, so an interactive operator
+                // can't confirm past the report and lose their node.
+                if compact_source && pd::migrate::prune_preflight::is_live_node() {
+                    eprintln!(
+                        "--compact-source refuses to run while pd/CometBFT ports are open \
+                         on 127.0.0.1. Stop the node and retry."
+                    );
+                    exit(2)
+                }
                 let mode = if unverified {
                     cnidarium::PruneMode::Unverified
                 } else {
@@ -612,9 +637,10 @@ async fn main() -> anyhow::Result<()> {
                 // faster alternatives, and whether this looks like a live node.
                 // Runs first even in the normal (non-dry-run) path so the
                 // operator can bail out before we hold pd's rocksdb open for
-                // hours.
+                // hours. `mode` is passed in so the report reflects the flag
+                // set rather than the default `Verified` label.
                 let preflight =
-                    pd::migrate::prune_preflight::Preflight::collect(&pd_home, chunk_size)
+                    pd::migrate::prune_preflight::Preflight::collect(&pd_home, chunk_size, mode)
                         .context("preflight failed")?;
                 preflight.print();
 
@@ -642,6 +668,7 @@ async fn main() -> anyhow::Result<()> {
                     chunk_size,
                     delete_old_db,
                     mode,
+                    compact_source,
                 };
                 let (root_hash, version) = pd::migrate::prune::prune(&pd_home, &options)
                     .instrument(pd_migrate_span)

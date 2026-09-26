@@ -24,6 +24,8 @@ mod wallet_id;
 pub mod transaction_hashes;
 mod tx;
 
+use crate::opt::OutputFormat;
+
 #[derive(Debug, clap::Subcommand)]
 pub enum ViewCmd {
     /// View your auction information
@@ -78,18 +80,22 @@ impl ViewCmd {
 
         match self {
             ViewCmd::Auction(auction_cmd) => {
-                auction_cmd.exec(app.view(), &full_viewing_key).await?
+                let output = app.output_or(OutputFormat::Text);
+                auction_cmd
+                    .exec(app.view(), &full_viewing_key, output)
+                    .await?
             }
             ViewCmd::WalletId(wallet_id_cmd) => {
-                wallet_id_cmd.exec(&full_viewing_key)?;
+                wallet_id_cmd.exec(&full_viewing_key, app.output_or(OutputFormat::Text))?;
             }
             ViewCmd::Tx(tx_cmd) => {
                 tx_cmd.exec(app).await?;
             }
             ViewCmd::ListTransactionHashes(transactions_cmd) => {
+                let output = app.output_or(OutputFormat::Text);
                 let view_client = app.view();
                 transactions_cmd
-                    .exec(&full_viewing_key, view_client)
+                    .exec(&full_viewing_key, view_client, output)
                     .await?;
             }
             ViewCmd::Sync => {
@@ -100,20 +106,23 @@ impl ViewCmd {
                 // The wallet has already been reset by a short-circuiting path.
             }
             ViewCmd::Address(address_cmd) => {
-                address_cmd.exec(&full_viewing_key)?;
+                address_cmd.exec(&full_viewing_key, app.output_or(OutputFormat::Text))?;
             }
             ViewCmd::NobleAddress(noble_address_cmd) => {
-                noble_address_cmd.exec(&full_viewing_key)?;
+                noble_address_cmd.exec(&full_viewing_key, app.output_or(OutputFormat::Text))?;
             }
             ViewCmd::Balance(balance_cmd) => {
+                // Read the format before borrowing the view service mutably.
+                let output = app.output_or(OutputFormat::Text);
                 let view_client = app.view();
-                balance_cmd.exec(view_client).await?;
+                balance_cmd.exec(view_client, output).await?;
             }
             ViewCmd::Staked(staked_cmd) => {
                 let channel = app.pd_channel().await?;
+                let output = app.output_or(OutputFormat::Text);
                 let view_client = app.view();
                 staked_cmd
-                    .exec(&full_viewing_key, view_client, channel)
+                    .exec(&full_viewing_key, view_client, channel, output)
                     .await?;
             }
             ViewCmd::LiquidityPositions(cmd) => cmd.exec(app).await?,

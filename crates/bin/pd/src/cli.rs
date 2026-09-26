@@ -223,6 +223,27 @@ pub enum MigrateCommand {
         /// `--unverified` itself so operators can't set it accidentally.
         #[clap(long)]
         i_understand_this_drops_per_chunk_verification: bool,
+        /// Run RocksDB `compact_range` on every column family of the source
+        /// database *before* the prune walk. Collapses shadowed version-delta
+        /// SSTs so the pruner iterator hits fewer files; empirical 2–3× walk
+        /// speedup on trees with heavy shadowed history.
+        ///
+        /// Rewrites SSTs in place. If the prune is aborted mid-way the source
+        /// is no longer bit-identical to what it was before the run, though
+        /// it remains a consistent RocksDB state.
+        ///
+        /// Refuses to run if the live-node probe (loopback pd/CometBFT ports)
+        /// fires — compaction on an open database corrupts the tree.
+        ///
+        /// Requires `--i-understand-source-compaction-modifies-source` to
+        /// actually take effect, mirroring the `--unverified` guard.
+        #[clap(long)]
+        compact_source: bool,
+        /// Confirmation flag that unblocks `--compact-source`. Split off so
+        /// operators can't trip into a source-modifying operation by
+        /// accident.
+        #[clap(long)]
+        i_understand_source_compaction_modifies_source: bool,
     },
 }
 

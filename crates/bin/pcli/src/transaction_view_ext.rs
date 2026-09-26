@@ -182,6 +182,9 @@ fn value_view_amount(value_view: &ValueView) -> Amount {
 pub trait TransactionViewExt {
     /// Render this transaction view on stdout.
     fn render_terminal(&self);
+
+    /// The `(action, description)` rows `render_terminal` prints, in order.
+    fn action_rows(&self) -> Vec<(String, String)>;
 }
 
 impl TransactionViewExt for TransactionView {
@@ -213,6 +216,17 @@ impl TransactionViewExt for TransactionView {
         let mut actions_table = Table::new();
         actions_table.load_preset(presets::NOTHING);
         actions_table.set_header(vec!["Tx Action", "Description"]);
+
+        for (action, description) in self.action_rows() {
+            actions_table.add_row(vec![action, description]);
+        }
+
+        // Print table of actions and their descriptions
+        println!("{actions_table}");
+    }
+
+    fn action_rows(&self) -> Vec<(String, String)> {
+        let mut rows = Vec::new();
 
         // Iterate over the ActionViews in the TxView & display as appropriate
         for action_view in &self.body_view.action_views {
@@ -462,10 +476,9 @@ impl TransactionViewExt for TransactionView {
                 penumbra_sdk_transaction::ActionView::ActionLiquidityTournamentVote(_) => todo!(),
             };
 
-            actions_table.add_row(row);
+            rows.push((row[0].to_string(), row[1].to_string()));
         }
 
-        // Print table of actions and their descriptions
-        println!("{actions_table}");
+        rows
     }
 }

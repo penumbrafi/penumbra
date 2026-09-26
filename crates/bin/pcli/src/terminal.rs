@@ -1,4 +1,4 @@
-use std::io::{IsTerminal, Read, Write};
+use std::io::{BufRead as _, IsTerminal, Read, Write};
 
 use anyhow::Result;
 use decaf377::{Element, Fq};
@@ -14,29 +14,47 @@ use penumbra_sdk_sct::Nullifier;
 use penumbra_sdk_shielded_pool::{EncryptedBackref, Note, NoteView};
 use penumbra_sdk_tct::structure::Hash;
 use penumbra_sdk_transaction::{view, ActionPlan, ActionView, TransactionPlan, TransactionView};
-use termion::{color, input::TermRead};
+use termion::color;
 use tonic::async_trait;
 
 use crate::transaction_view_ext::TransactionViewExt as _;
 
+/// Read a single line from stdin, prompting interactively if stdin is a terminal.
+///
+/// Returns `Ok(None)` at end of input. Only the line terminator is stripped, so
+/// callers that want to be lenient about surrounding whitespace must trim.
+///
+/// This consumes exactly one line rather than all of stdin, so that several
+/// prompts in a row can be fed by piping one line per prompt.
+pub fn read_stdin_line(prompt: &str) -> Result<Option<String>> {
+    // The `rpassword` crate doesn't support reading from stdin, so we check
+    // for an interactive session. We must support non-interactive use cases,
+    // for integration with other tooling.
+    if std::io::stdin().is_terminal() {
+        return Ok(Some(rpassword::prompt_password(prompt)?));
+    }
+    let mut line = String::new();
+    // `read_line` returns 0 only at end of input; an empty line yields 1 ("\n").
+    if std::io::stdin().lock().read_line(&mut line)? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(
+        line.trim_end_matches(['\r', '\n'].as_slice()).to_string(),
+    ))
+}
+
 async fn read_password(prompt: &str) -> Result<String> {
-    fn get_possibly_empty_string(prompt: &str) -> Result<String> {
-        // The `rpassword` crate doesn't support reading from stdin, so we check
-        // for an interactive session. We must support non-interactive use cases,
-        // for integration with other tooling.
-        if std::io::stdin().is_terminal() {
-            Ok(rpassword::prompt_password(prompt)?)
-        } else {
-            Ok(std::io::stdin().lock().read_line()?.unwrap_or_default())
+    loop {
+        match read_stdin_line(prompt)? {
+            // Keep trying until the user provides an input.
+            Some(s) if s.is_empty() => continue,
+            Some(s) => return Ok(s),
+            None => anyhow::bail!(
+                "unexpected end of input while reading a password; \
+                 when piping input, supply each password on its own line"
+            ),
         }
     }
-
-    let mut string: String = Default::default();
-    while string.is_empty() {
-        // Keep trying until the user provides an input
-        string = get_possibly_empty_string(prompt)?;
-    }
-    Ok(string)
 }
 
 fn pretty_print_transaction_plan(

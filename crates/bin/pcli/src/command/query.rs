@@ -25,17 +25,9 @@ pub(super) use validator::ValidatorCmd;
 
 use crate::App;
 
-#[derive(Clone, clap::ValueEnum, Debug)]
-pub enum OutputFormat {
-    Json,
-    Base64,
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        Self::Json
-    }
-}
+/// The output formats pcli knows, defined once at the top level (`crate::opt`)
+/// so that `--output` means the same thing on every command.
+pub(crate) use crate::opt::OutputFormat;
 
 #[derive(Debug, clap::Subcommand)]
 pub enum QueryCmd {

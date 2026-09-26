@@ -39,9 +39,20 @@ pub struct App {
     pub config: PcliConfig,
     /// If present, save the transaction here instead of broadcasting it.
     pub save_transaction_here_instead: Option<PathBuf>,
+    /// The output format the user asked for with `-o/--output`, if any.
+    ///
+    /// `None` means "each command's own default", which is text everywhere
+    /// except the commands that have always written JSON (`pcli q tx`). See
+    /// `Command::check_output` for which commands accept which format.
+    pub output: Option<crate::opt::OutputFormat>,
 }
 
 impl App {
+    /// The format to write in: what the user asked for, else `default`.
+    pub fn output_or(&self, default: crate::opt::OutputFormat) -> crate::opt::OutputFormat {
+        self.output.unwrap_or(default)
+    }
+
     pub fn view(&mut self) -> &mut impl ViewClient {
         self.view.as_mut().expect("view service initialized")
     }

@@ -12,6 +12,7 @@ use penumbra_sdk_num::Amount;
 use penumbra_sdk_proto::view::v1::GasPricesRequest;
 use penumbra_sdk_view::{Planner, ViewClient};
 
+use crate::network::progress;
 use crate::App;
 
 #[derive(Debug, Clone, clap::Args)]
@@ -69,6 +70,7 @@ pub struct Linear {
 
 impl Linear {
     pub async fn exec(&self, app: &mut App) -> anyhow::Result<()> {
+        let json = app.json_output();
         self.validate()?;
 
         let pair = self.pair.clone();
@@ -112,24 +114,42 @@ impl Linear {
         let amount_start = pair.start.format_value(amount_start);
         let amount_end = pair.end.format_value(amount_end);
 
-        println!(
-            "#################################################################################"
+        progress(
+            json,
+            format_args!(
+                "#################################################################################"
+            ),
         );
-        println!(
-            "########################### LIQUIDITY SUMMARY ###################################"
+        progress(
+            json,
+            format_args!(
+                "########################### LIQUIDITY SUMMARY ###################################"
+            ),
         );
-        println!(
-            "#################################################################################"
+        progress(
+            json,
+            format_args!(
+                "#################################################################################"
+            ),
         );
-        println!("\nYou want to provide liquidity on the pair {}", pair);
-        println!("You will need:",);
-        println!(" -> {amount_start}{}", pair.start);
-        println!(" -> {amount_end}{}", pair.end);
+        progress(
+            json,
+            format_args!("\nYou want to provide liquidity on the pair {}", pair),
+        );
+        progress(json, format_args!("You will need:"));
+        progress(json, format_args!(" -> {amount_start}{}", pair.start));
+        progress(json, format_args!(" -> {amount_end}{}", pair.end));
 
-        println!("You will create the following positions:");
-        println!(
-            "{}",
-            crate::command::utils::render_positions(&asset_cache, &positions),
+        progress(
+            json,
+            format_args!("You will create the following positions:"),
+        );
+        progress(
+            json,
+            format_args!(
+                "{}",
+                crate::command::utils::render_positions(&asset_cache, &positions),
+            ),
         );
 
         if !self.yes
@@ -165,8 +185,23 @@ impl Linear {
                 AddressIndex::new(self.source),
             )
             .await?;
+        if json {
+            // The position ids are fixed by the plan, so they are known before
+            // the transaction is submitted; the positions only exist on chain
+            // once it confirms, which the `confirmed` event reports.
+            for position in &positions {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "created",
+                        "position_id": position.id().to_string(),
+                    })
+                );
+            }
+        }
+
         let tx_id = app.build_and_submit_transaction(plan).await?;
-        println!("posted with transaction id: {tx_id}");
+        progress(json, format_args!("posted with transaction id: {tx_id}"));
 
         Ok(())
     }
