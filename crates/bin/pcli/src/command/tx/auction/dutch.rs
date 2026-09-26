@@ -648,6 +648,12 @@ fn display_auction_description(
     .format(&asset_cache);
 
     progress(json, format_args!("Total auctioned: {tally_input_fmt}"));
-    progress(json, format_args!("Total max output: {tally_output_max_fmt}"));
-    progress(json, format_args!("Total min output: {tally_output_min_fmt}"));
+    progress(
+        json,
+        format_args!("Total max output: {tally_output_max_fmt}"),
+    );
+    progress(
+        json,
+        format_args!("Total min output: {tally_output_min_fmt}"),
+    );
 }

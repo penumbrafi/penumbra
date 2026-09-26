@@ -1,7 +1,7 @@
 use anyhow::Result;
 use comfy_table::{presets, Cell, ContentArrangement, Table};
-use penumbra_sdk_auction::auction::dutch::DutchAuction;
 use penumbra_sdk_asset::Value;
+use penumbra_sdk_auction::auction::dutch::DutchAuction;
 use penumbra_sdk_keys::FullViewingKey;
 use penumbra_sdk_num::fixpoint::U128x128;
 use penumbra_sdk_num::Amount;

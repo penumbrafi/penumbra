@@ -108,7 +108,10 @@ impl ConstantProduct {
         progress(json, format_args!(" -> {amount_end}{}", pair.end));
         // TODO(erwan): would be nice to print current balance?
 
-        progress(json, format_args!("You will create the following positions:"));
+        progress(
+            json,
+            format_args!("You will create the following positions:"),
+        );
         let asset_cache = app.view().assets().await?;
         progress(
             json,

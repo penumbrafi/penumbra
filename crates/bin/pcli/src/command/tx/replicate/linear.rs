@@ -140,7 +140,10 @@ impl Linear {
         progress(json, format_args!(" -> {amount_start}{}", pair.start));
         progress(json, format_args!(" -> {amount_end}{}", pair.end));
 
-        progress(json, format_args!("You will create the following positions:"));
+        progress(
+            json,
+            format_args!("You will create the following positions:"),
+        );
         progress(
             json,
             format_args!(

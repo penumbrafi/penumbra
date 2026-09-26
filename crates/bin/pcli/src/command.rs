@@ -126,10 +126,7 @@ impl Command {
                         | ViewCmd::LiquidityPositions(_)
                 ),
                 crate::opt::OutputFormat::Json
-            ) | (
-                Command::Transaction(_),
-                crate::opt::OutputFormat::Json
-            )
+            ) | (Command::Transaction(_), crate::opt::OutputFormat::Json)
         );
         if supported {
             return Ok(());

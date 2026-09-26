@@ -15,7 +15,10 @@ impl WalletIdCmd {
     pub fn exec(&self, fvk: &FullViewingKey, output: OutputFormat) -> Result<()> {
         let wallet_id = fvk.wallet_id();
         if output == OutputFormat::Json {
-            println!("{}", serde_json::json!({ "wallet_id": wallet_id.to_string() }));
+            println!(
+                "{}",
+                serde_json::json!({ "wallet_id": wallet_id.to_string() })
+            );
         } else {
             println!("{wallet_id}");
         }
