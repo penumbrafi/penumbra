@@ -108,6 +108,20 @@ async fn main() -> anyhow::Result<()> {
             };
             let rocksdb_home = pd_home.join("rocksdb");
 
+            // An interrupted `pd migrate prune` leaves `rocksdb_old` without `rocksdb`.
+            // Opening storage here would silently create an empty database and
+            // start syncing from genesis, so refuse instead.
+            let rocksdb_old = pd_home.join("rocksdb_old");
+            anyhow::ensure!(
+                !(rocksdb_old.exists() && !rocksdb_home.exists()),
+                "found {} but no {}: a `pd migrate prune` was interrupted mid-swap. \
+                 Restore the database with `mv {} {}` before starting pd.",
+                rocksdb_old.display(),
+                rocksdb_home.display(),
+                rocksdb_old.display(),
+                rocksdb_home.display(),
+            );
+
             let storage = Storage::load(rocksdb_home, SUBSTORE_PREFIXES.to_vec())
                 .await
                 .context(
@@ -471,6 +485,80 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("export complete: {}", export_directory.display());
             }
         }
+        RootCommand::MigrateRestart {
+            home,
+            comet_home,
+            remove,
+            disable,
+            unsafe_test_chain_id,
+            unsafe_test_rekey,
+        } => {
+            let (pd_home, comet_home) = match home {
+                Some(h) => (h, comet_home),
+                None => {
+                    let base = get_network_dir(None).join("node0");
+                    (base.join("pd"), Some(base.join("cometbft")))
+                }
+            };
+            let remove = remove
+                .iter()
+                .map(|s| {
+                    let bytes = hex::decode(s.trim())
+                        .with_context(|| format!("invalid hex cometbft address: {s}"))?;
+                    let arr: [u8; 20] = bytes
+                        .try_into()
+                        .map_err(|_| anyhow!("cometbft address must be 20 bytes: {s}"))?;
+                    Ok(arr)
+                })
+                .collect::<anyhow::Result<Vec<[u8; 20]>>>()?;
+            let new_state = if disable {
+                penumbra_sdk_stake::validator::State::Disabled
+            } else {
+                penumbra_sdk_stake::validator::State::Jailed
+            };
+            tracing::info!(
+                ?pd_home,
+                ?comet_home,
+                n_remove = remove.len(),
+                ?new_state,
+                "running restart-fork migration"
+            );
+            let parse_key = |b64: &str| -> anyhow::Result<tendermint::PublicKey> {
+                serde_json::from_value(serde_json::json!({
+                    "type": "tendermint/PubKeyEd25519",
+                    "value": b64,
+                }))
+                .with_context(|| format!("invalid ed25519 consensus key {b64:?}"))
+            };
+            let rekey = unsafe_test_rekey
+                .iter()
+                .map(|pair| {
+                    let (old, new) = pair
+                        .split_once(':')
+                        .with_context(|| format!("expected OLD_B64:NEW_B64, got {pair:?}"))?;
+                    Ok((parse_key(old)?, parse_key(new)?))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let unsafe_test = pd::migrate::mainnet5_community_fork::UnsafeTestOptions {
+                chain_id: unsafe_test_chain_id,
+                rekey,
+            };
+            if unsafe_test.chain_id.is_some() || !unsafe_test.rekey.is_empty() {
+                tracing::warn!(
+                    ?unsafe_test,
+                    "DRILL MODE: the result is NOT the mainnet restart state"
+                );
+            }
+            pd::migrate::mainnet5_community_fork::run(
+                pd_home,
+                comet_home,
+                remove,
+                new_state,
+                unsafe_test,
+            )
+            .await
+            .context("restart-fork migration failed")?;
+        }
         RootCommand::Migrate {
             home,
             comet_home,
@@ -493,6 +581,76 @@ async fn main() -> anyhow::Result<()> {
 
             // Handle migration subcommands
             match migration_type {
+                Some(MigrateCommand::Prune {
+                    chunk_size,
+                    delete_old_db,
+                    dry_run,
+                    yes,
+                    unverified,
+                    i_understand_this_drops_per_chunk_verification,
+                }) => {
+                    // `--unverified` is a foot-gun for anyone restoring an archive
+                    // fetched over an untrusted network; require the paired
+                    // confirmation flag so the operator has to affirm they know
+                    // what they are opting into.
+                    if unverified && !i_understand_this_drops_per_chunk_verification {
+                        eprintln!(
+                            "--unverified drops per-chunk range-proof verification. \
+                             Only run this against a source database you trust; a filesystem \
+                             snapshot (ZFS/btrfs/LVM) taken before the prune is strongly \
+                             recommended for rollback. Add \
+                             --i-understand-this-drops-per-chunk-verification to proceed."
+                        );
+                        exit(2)
+                    }
+                    let mode = if unverified {
+                        cnidarium::PruneMode::Unverified
+                    } else {
+                        cnidarium::PruneMode::Verified
+                    };
+
+                    // Preflight: report source size, estimated duration, RAM peak,
+                    // faster alternatives, and whether this looks like a live node.
+                    // Runs first even in the normal (non-dry-run) path so the
+                    // operator can bail out before we hold pd's rocksdb open for
+                    // hours.
+                    let preflight =
+                        pd::migrate::prune_preflight::Preflight::collect(&pd_home, chunk_size)
+                            .context("preflight failed")?;
+                    preflight.print();
+
+                    if dry_run {
+                        // Reported the plan, touched no disk. Exit 0 so scripts
+                        // can `--dry-run` in CI without failing.
+                        exit(0)
+                    }
+
+                    let long_downtime = preflight.estimated_rebuild_duration().as_secs() > 3600;
+                    let requires_confirm = preflight.live_node_detected || long_downtime;
+                    if requires_confirm && !yes {
+                        let ok = pd::migrate::prune_preflight::confirm_prompt()
+                            .context("confirmation prompt failed")?;
+                        if !ok {
+                            eprintln!("Aborted by operator. No changes made.");
+                            exit(1)
+                        }
+                    }
+
+                    // Non-consensus-breaking and safe to run any time the node is stopped.
+                    // Handled before any halt-bit check so the database is opened once.
+                    tracing::info!(?mode, "performing JMT pruning");
+                    let options = pd::migrate::prune::PruneOptions {
+                        chunk_size,
+                        delete_old_db,
+                        mode,
+                    };
+                    let (root_hash, version) = pd::migrate::prune::prune(&pd_home, &options)
+                        .instrument(pd_migrate_span)
+                        .await
+                        .context("failed to perform JMT pruning")?;
+                    tracing::info!(?root_hash, version, "JMT pruning complete");
+                    exit(0)
+                }
                 Some(MigrateCommand::ReadyToStart) => {
                     tracing::info!("disabling halt order in local state");
                     ReadyToStart

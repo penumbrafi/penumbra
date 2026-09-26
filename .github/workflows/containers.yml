@@ -5,8 +5,9 @@ on:
   push:
     branches:
       - main
-    tags:
-      - '**[0-9]+.[0-9]+.[0-9]+*'
+  # Tag pushes are handled by recovery-release.yml, the single release
+  # workflow of this fork. Disabled here so that tagging a release cannot
+  # publish anything from a second, unreviewed path.
   # Also support ad-hoc calls for workflow.
   workflow_call:
   workflow_dispatch:

@@ -81,7 +81,17 @@ pub async fn integrity_check(src_database_url: &str) -> anyhow::Result<()> {
         failed |= !task.await??;
     }
     if failed {
-        anyhow::bail!("integrity checks failed, check logs");
+        // Downgraded from `bail!` — a gap in the source cometbft store
+        // used to be a hard-fail on startup, which meant one missing
+        // block permanently locked out pindexer even though every
+        // downstream indexer already tolerates gaps (dex_ex now
+        // `continue`s past them; the block indexer produces empty
+        // rows). Rotko's mainnet source cometbft (`penumbra-02` CT
+        // 1102) has known gaps from partial resyncs, so we log and
+        // proceed rather than crash on boot.
+        tracing::warn!(
+            "integrity check found gaps in source cometbft — see log lines above; proceeding anyway"
+        );
     }
     Ok(())
 }

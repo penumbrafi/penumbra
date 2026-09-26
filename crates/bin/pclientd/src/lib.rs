@@ -387,9 +387,9 @@ impl Opt {
                     .load_or_init_sqlite(&config.full_viewing_key, &config.grpc_url)
                     .await?;
 
-                // Use provided source or default to Prax wallet registry
+                // Use provided source or default to the community registry
                 let source_url = source.clone().unwrap_or_else(|| {
-                    "https://raw.githubusercontent.com/prax-wallet/registry/refs/heads/main/registry/chains/".to_string()
+                    "https://raw.githubusercontent.com/penumbrafi/registry/main/registry/chains/".to_string()
                 });
 
                 // Determine the final registry URL
