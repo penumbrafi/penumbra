@@ -7913,6 +7913,15 @@ impl serde::Serialize for TransactionPlannerRequest {
         if !self.action_liquidity_tournament_vote.is_empty() {
             len += 1;
         }
+        if !self.proposal_submits.is_empty() {
+            len += 1;
+        }
+        if !self.proposal_withdraws.is_empty() {
+            len += 1;
+        }
+        if !self.proposal_deposit_claims.is_empty() {
+            len += 1;
+        }
         if self.epoch_index != 0 {
             len += 1;
         }
@@ -7985,6 +7994,15 @@ impl serde::Serialize for TransactionPlannerRequest {
         if !self.action_liquidity_tournament_vote.is_empty() {
             struct_ser.serialize_field("actionLiquidityTournamentVote", &self.action_liquidity_tournament_vote)?;
         }
+        if !self.proposal_submits.is_empty() {
+            struct_ser.serialize_field("proposalSubmits", &self.proposal_submits)?;
+        }
+        if !self.proposal_withdraws.is_empty() {
+            struct_ser.serialize_field("proposalWithdraws", &self.proposal_withdraws)?;
+        }
+        if !self.proposal_deposit_claims.is_empty() {
+            struct_ser.serialize_field("proposalDepositClaims", &self.proposal_deposit_claims)?;
+        }
         if self.epoch_index != 0 {
             #[allow(clippy::needless_borrow)]
             #[allow(clippy::needless_borrows_for_generic_args)]
@@ -8046,6 +8064,12 @@ impl<'de> serde::Deserialize<'de> for TransactionPlannerRequest {
             "delegatorVotes",
             "action_liquidity_tournament_vote",
             "actionLiquidityTournamentVote",
+            "proposal_submits",
+            "proposalSubmits",
+            "proposal_withdraws",
+            "proposalWithdraws",
+            "proposal_deposit_claims",
+            "proposalDepositClaims",
             "epoch_index",
             "epochIndex",
             "epoch",
@@ -8077,6 +8101,9 @@ impl<'de> serde::Deserialize<'de> for TransactionPlannerRequest {
             DutchAuctionWithdrawActions,
             DelegatorVotes,
             ActionLiquidityTournamentVote,
+            ProposalSubmits,
+            ProposalWithdraws,
+            ProposalDepositClaims,
             EpochIndex,
             Epoch,
             AutoFee,
@@ -8123,6 +8150,9 @@ impl<'de> serde::Deserialize<'de> for TransactionPlannerRequest {
                             "dutchAuctionWithdrawActions" | "dutch_auction_withdraw_actions" => Ok(GeneratedField::DutchAuctionWithdrawActions),
                             "delegatorVotes" | "delegator_votes" => Ok(GeneratedField::DelegatorVotes),
                             "actionLiquidityTournamentVote" | "action_liquidity_tournament_vote" => Ok(GeneratedField::ActionLiquidityTournamentVote),
+                            "proposalSubmits" | "proposal_submits" => Ok(GeneratedField::ProposalSubmits),
+                            "proposalWithdraws" | "proposal_withdraws" => Ok(GeneratedField::ProposalWithdraws),
+                            "proposalDepositClaims" | "proposal_deposit_claims" => Ok(GeneratedField::ProposalDepositClaims),
                             "epochIndex" | "epoch_index" => Ok(GeneratedField::EpochIndex),
                             "epoch" => Ok(GeneratedField::Epoch),
                             "autoFee" | "auto_fee" => Ok(GeneratedField::AutoFee),
@@ -8166,6 +8196,9 @@ impl<'de> serde::Deserialize<'de> for TransactionPlannerRequest {
                 let mut dutch_auction_withdraw_actions__ = None;
                 let mut delegator_votes__ = None;
                 let mut action_liquidity_tournament_vote__ = None;
+                let mut proposal_submits__ = None;
+                let mut proposal_withdraws__ = None;
+                let mut proposal_deposit_claims__ = None;
                 let mut epoch_index__ = None;
                 let mut epoch__ = None;
                 let mut fee_mode__ = None;
@@ -8293,6 +8326,24 @@ impl<'de> serde::Deserialize<'de> for TransactionPlannerRequest {
                             }
                             action_liquidity_tournament_vote__ = Some(map_.next_value()?);
                         }
+                        GeneratedField::ProposalSubmits => {
+                            if proposal_submits__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("proposalSubmits"));
+                            }
+                            proposal_submits__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::ProposalWithdraws => {
+                            if proposal_withdraws__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("proposalWithdraws"));
+                            }
+                            proposal_withdraws__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::ProposalDepositClaims => {
+                            if proposal_deposit_claims__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("proposalDepositClaims"));
+                            }
+                            proposal_deposit_claims__ = Some(map_.next_value()?);
+                        }
                         GeneratedField::EpochIndex => {
                             if epoch_index__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("epochIndex"));
@@ -8347,6 +8398,9 @@ impl<'de> serde::Deserialize<'de> for TransactionPlannerRequest {
                     dutch_auction_withdraw_actions: dutch_auction_withdraw_actions__.unwrap_or_default(),
                     delegator_votes: delegator_votes__.unwrap_or_default(),
                     action_liquidity_tournament_vote: action_liquidity_tournament_vote__.unwrap_or_default(),
+                    proposal_submits: proposal_submits__.unwrap_or_default(),
+                    proposal_withdraws: proposal_withdraws__.unwrap_or_default(),
+                    proposal_deposit_claims: proposal_deposit_claims__.unwrap_or_default(),
                     epoch_index: epoch_index__.unwrap_or_default(),
                     epoch: epoch__,
                     fee_mode: fee_mode__,
