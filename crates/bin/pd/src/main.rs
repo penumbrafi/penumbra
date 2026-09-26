@@ -549,9 +549,15 @@ async fn main() -> anyhow::Result<()> {
                     "DRILL MODE: the result is NOT the mainnet restart state"
                 );
             }
-            pd::migrate::mainnet5_community_fork::run(pd_home, comet_home, remove, new_state, unsafe_test)
-                .await
-                .context("restart-fork migration failed")?;
+            pd::migrate::mainnet5_community_fork::run(
+                pd_home,
+                comet_home,
+                remove,
+                new_state,
+                unsafe_test,
+            )
+            .await
+            .context("restart-fork migration failed")?;
         }
         RootCommand::Migrate {
             home,
@@ -607,10 +613,9 @@ async fn main() -> anyhow::Result<()> {
                 // Runs first even in the normal (non-dry-run) path so the
                 // operator can bail out before we hold pd's rocksdb open for
                 // hours.
-                let preflight = pd::migrate::prune_preflight::Preflight::collect(
-                    &pd_home, chunk_size,
-                )
-                .context("preflight failed")?;
+                let preflight =
+                    pd::migrate::prune_preflight::Preflight::collect(&pd_home, chunk_size)
+                        .context("preflight failed")?;
                 preflight.print();
 
                 if dry_run {
@@ -619,10 +624,7 @@ async fn main() -> anyhow::Result<()> {
                     exit(0)
                 }
 
-                let long_downtime = preflight
-                    .estimated_rebuild_duration()
-                    .as_secs()
-                    > 3600;
+                let long_downtime = preflight.estimated_rebuild_duration().as_secs() > 3600;
                 let requires_confirm = preflight.live_node_detected || long_downtime;
                 if requires_confirm && !yes {
                     let ok = pd::migrate::prune_preflight::confirm_prompt()
