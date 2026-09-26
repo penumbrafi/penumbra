@@ -43,6 +43,10 @@ on:
   # release layout: `<binary>-<target-triple>.tar.gz` without any version
   # embedded in the filename, so `/releases/latest/pd-x86_64-unknown-
   # linux-gnu.tar.gz` is a stable URL that scripts can pin to.
+  # Pull requests run `dist plan` (publishing is off). With pr-run-mode =
+  # "upload" in dist-workspace.toml they also build every artifact, so a
+  # runner or toolchain change can be checked before a release tag exists.
+  pull_request:
   push:
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'

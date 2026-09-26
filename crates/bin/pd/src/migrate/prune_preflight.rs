@@ -57,8 +57,14 @@ impl Preflight {
             rocksdb_path.display()
         );
 
-        let (source_bytes, jmt_bytes, other_cf_bytes, estimated_keys, version_to_preserve, historical_versions) =
-            probe_source_db(&rocksdb_path).context("preflight failed reading source rocksdb")?;
+        let (
+            source_bytes,
+            jmt_bytes,
+            other_cf_bytes,
+            estimated_keys,
+            version_to_preserve,
+            historical_versions,
+        ) = probe_source_db(&rocksdb_path).context("preflight failed reading source rocksdb")?;
 
         Ok(Self {
             source_bytes,
@@ -115,12 +121,18 @@ impl Preflight {
             "Pruning plan (chunk_size={}, mode=Verified):",
             self.chunk_size
         );
-        println!("  JMT chunks:                    ~{}", self.estimated_chunks());
+        println!(
+            "  JMT chunks:                    ~{}",
+            self.estimated_chunks()
+        );
         println!(
             "  Estimated JMT rebuild time:    {}",
             human_duration(self.estimated_rebuild_duration())
         );
-        println!("  Peak RAM per chunk buffer:     {}", human_bytes(self.estimated_peak_ram_bytes()));
+        println!(
+            "  Peak RAM per chunk buffer:     {}",
+            human_bytes(self.estimated_peak_ram_bytes())
+        );
         println!(
             "  Peak disk during prune:        source ({}) + rebuilt (~{}) ≈ {}",
             human_bytes(self.source_bytes),
@@ -160,20 +172,30 @@ impl Preflight {
             let fits = if self.host_ram_available_bytes == 0 {
                 "".to_string()
             } else if peak_ram < self.host_ram_available_bytes / 2 {
-                format!("  fits on this box ({} available)", human_bytes(self.host_ram_available_bytes))
+                format!(
+                    "  fits on this box ({} available)",
+                    human_bytes(self.host_ram_available_bytes)
+                )
             } else if peak_ram < self.host_ram_available_bytes {
-                format!("  tight on RAM ({} available)", human_bytes(self.host_ram_available_bytes))
+                format!(
+                    "  tight on RAM ({} available)",
+                    human_bytes(self.host_ram_available_bytes)
+                )
             } else {
-                format!("  ⚠ would OOM on this box ({} available)", human_bytes(self.host_ram_available_bytes))
+                format!(
+                    "  ⚠ would OOM on this box ({} available)",
+                    human_bytes(self.host_ram_available_bytes)
+                )
             };
             println!(
                 "  --chunk-size {:<9} {}   RAM peak ~{}{}",
-                chunk_size, gain, human_bytes(peak_ram), fits
+                chunk_size,
+                gain,
+                human_bytes(peak_ram),
+                fits
             );
         }
-        println!(
-            "  clone-and-swap flow           0 s node downtime  (see docs/prune-on-clone.md)"
-        );
+        println!("  clone-and-swap flow           0 s node downtime  (see docs/prune-on-clone.md)");
     }
 }
 
@@ -231,7 +253,14 @@ fn probe_source_db(rocksdb_path: &Path) -> Result<(u64, u64, u64, u64, u64, u64)
     let version_to_preserve = read_current_version(&db).unwrap_or(0);
     let historical_versions = estimate_historical_versions(&db, version_to_preserve);
 
-    Ok((total, jmt, other, estimated_keys, version_to_preserve, historical_versions))
+    Ok((
+        total,
+        jmt,
+        other,
+        estimated_keys,
+        version_to_preserve,
+        historical_versions,
+    ))
 }
 
 fn read_current_version(_db: &DB) -> Option<u64> {
@@ -269,11 +298,7 @@ fn host_ram_available() -> Option<u64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
     for line in meminfo.lines() {
         if let Some(rest) = line.strip_prefix("MemAvailable:") {
-            let kb: u64 = rest
-                .split_whitespace()
-                .next()?
-                .parse()
-                .ok()?;
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
             return Some(kb.saturating_mul(1024));
         }
     }
