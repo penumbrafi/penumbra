@@ -147,6 +147,32 @@ pub enum RootCommand {
         #[clap(subcommand)]
         migration_type: Option<MigrateCommand>,
     },
+
+    /// Coordinated-restart migration for a chain halted by liveness loss: remove the given
+    /// validators from the active set (Jailed, or Disabled with --disable) and write a
+    /// checkpoint genesis. Does not require the halt bit. EXPERT MODE: all participants must
+    /// run the identical binary with the identical --remove list.
+    MigrateRestart {
+        /// The home directory of the full node (contains `rocksdb`).
+        #[clap(long, env = "PENUMBRA_PD_HOME", display_order = 100)]
+        home: Option<PathBuf>,
+        /// If set, also write the genesis into this CometBFT home and bump its
+        /// priv_validator_state height.
+        #[clap(long, display_order = 200)]
+        comet_home: Option<PathBuf>,
+        /// CometBFT consensus address (40 hex chars) of a validator to remove. Repeatable.
+        #[clap(long = "remove", required = true, display_order = 300)]
+        remove: Vec<String>,
+        /// Mark removed validators Disabled (no downtime penalty) instead of Jailed.
+        #[clap(long, display_order = 400)]
+        disable: bool,
+        /// DRILL ONLY: override the chain id so the drill can never talk to mainnet.
+        #[clap(long, hide = true)]
+        unsafe_test_chain_id: Option<String>,
+        /// DRILL ONLY: replace a kept validator's consensus key, `OLD_B64:NEW_B64`. Repeatable.
+        #[clap(long, hide = true)]
+        unsafe_test_rekey: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -170,6 +196,53 @@ pub enum MigrateCommand {
         /// Optional app version to set during migration.
         #[clap(long, value_name = "VERSION")]
         target_app_version: Option<u64>,
+    },
+    /// Prune historical JMT nodes to reclaim storage space.
+    ///
+    /// This is a non-consensus-breaking local optimization that removes
+    /// old versioned nodes while preserving the latest state. The root
+    /// hash remains unchanged.
+    ///
+    /// The unpruned database is kept at `<pd_home>/rocksdb_old` unless
+    /// `--delete-old-db` is passed, so the operator can roll back until the
+    /// pruned node has been verified.
+    Prune {
+        /// Number of key-value pairs per chunk.
+        #[clap(long, env = "PRUNE_CHUNK_SIZE", default_value_t = 100_000)]
+        chunk_size: usize,
+        /// Delete the unpruned database after a successful swap instead of
+        /// keeping it at `rocksdb_old` for rollback.
+        #[clap(long)]
+        delete_old_db: bool,
+        /// Print the preflight report (source size, estimated duration, RAM
+        /// peak, faster alternatives, live-node detection) and exit without
+        /// touching disk. Safe on a running node.
+        #[clap(long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt that fires when a long prune is
+        /// about to be run on what looks like a live node. Intended for
+        /// automation; interactive operators should read the report and
+        /// answer the prompt themselves.
+        #[clap(long, short = 'y')]
+        yes: bool,
+        /// Skip per-chunk range-proof generation and verification. About 3×
+        /// faster on penumbra-1 mainnet-scale JMTs (from ~15 h to ~5 h).
+        /// The rebuilt root hash is still compared against the source's
+        /// root at the end of each substore, so gross iteration or write
+        /// errors are still caught — but a corrupted source that produces
+        /// the same final root will not be detected per-chunk.
+        ///
+        /// Requires `--i-understand-this-drops-per-chunk-verification` to
+        /// actually take effect, so nobody trips into this by mistake.
+        /// Strongly recommend taking a filesystem snapshot (ZFS, btrfs,
+        /// LVM) before running with this flag so you have a working
+        /// rollback path even outside pd's own `rocksdb_old`.
+        #[clap(long)]
+        unverified: bool,
+        /// Confirmation flag that unblocks `--unverified`. Split off from
+        /// `--unverified` itself so operators can't set it accidentally.
+        #[clap(long)]
+        i_understand_this_drops_per_chunk_verification: bool,
     },
 }
 

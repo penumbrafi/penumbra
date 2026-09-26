@@ -258,6 +258,11 @@ impl Consensus {
 
         Ok(response::Commit {
             data: app_hash.0.to_vec().into(),
+            // Deliberately zero: this tells CometBFT to keep every block.
+            // pd has no state sync, so new nodes can only join by replaying
+            // blocks fetched from peers. Enabling block retention before state
+            // sync exists risks a network no new node can join.
+            // See docs/pruning.md before changing this.
             retain_height: 0u32.into(),
         })
     }

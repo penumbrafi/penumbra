@@ -1,0 +1,2111 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 70e163d8c..511dbb52c 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,244 +1,244 @@
+ [workspace]
+ 
+ resolver = "2"
+ 
+ exclude = ["tools/proto-compiler"]
+ 
+ # Also remember to add to deployments/scripts/rust-docs
+ members = [
+   "crates/bench",
+   "crates/bin/elcuity",
+   "crates/bin/pcli",
+   "crates/bin/pclientd",
+   "crates/bin/pd",
+   "crates/bin/pindexer",
+-  "crates/bin/pmonitor",
++  # "crates/bin/pmonitor",  # dropped: unresolvable dev-dep, not needed for pd
+   "crates/cnidarium-component",
+   "crates/core/app",
+   "crates/core/app-tests",
+   "crates/core/asset",
+   "crates/core/component/community-pool",
+   "crates/core/component/compact-block",
+   "crates/core/component/auction",
+   "crates/core/component/dex",
+   "crates/core/component/distributions",
+   "crates/core/component/fee",
+   "crates/core/component/funding",
+   "crates/core/component/governance",
+   "crates/core/component/ibc",
+   "crates/core/component/sct",
+   "crates/core/component/shielded-pool",
+   "crates/core/component/stake",
+   "crates/core/keys",
+   "crates/core/num",
+   "crates/core/transaction",
+   "crates/core/txhash",
+   "crates/crypto/decaf377-fmd",
+   "crates/crypto/decaf377-frost",
+   "crates/crypto/decaf377-ka",
+   "crates/crypto/eddy",
+   "crates/crypto/proof-params",
+   "crates/crypto/proof-setup",
+   "crates/crypto/tct",
+   "crates/custody",
+   "crates/custody-ledger-usb",
+   "crates/misc/measure",
+   "crates/misc/tct-visualize",
+   "crates/proto",
+   "crates/test/mock-client",
+   "crates/test/mock-consensus",
+   "crates/test/mock-tendermint-proxy",
+   "crates/test/tct-property-test",
+   "crates/test/tracing-subscriber",
+   "crates/util/auto-https",
+   "crates/util/tendermint-proxy",
+   "crates/util/tower-trace",
+   "crates/util/cometindex",
+   "crates/view",
+   "crates/wallet",
+   "tools/summonerd",
+   "tools/parameter-setup",
+   "tools/picturesque",
+ ]
+ 
+ # The profile that 'cargo dist' will build with
+ [profile.dist]
+ inherits = "release"
+ 
+ # config for 'cargo release'
+ [workspace.metadata.release]
+ # Instruct cargo-release to increment versions for all packages in the workspace in lockstep.
+ shared-version = true
+ # Format spec for the auto-generated git tag, based on new version for release.
+ tag-name = "v{{version}}"
+ # The message is required for an annotated tag to be created.
+ tag-message                = "Penumbra version {{version}}"
+ pre-release-commit-message = "chore: release version {{version}}"
+ # Permit publishing to crates.io; local developers should run `cargo release --no-publish`
+ # to prepare the git info, then pushing to remote with tag will trigger crates.io publication.
+ publish = true
+ # Do commit, tag, and push the version bump, triggering a new release.
+ tag = true
+ # Don't push, since we're still evaluating the new release workflow.
+ push = false
+ # Edit each crate's Cargo.toml, bumping versions for other workspace crates.
+ dependent-version = "upgrade"
+ # Increase default ratelimit on publishing packages
+ rate-limit = { existing-packages = 50 }
+ # Permit publishing from any branch, because in GHA CI context, HEAD is checked out.
+ allow-branch = ["*"]
+ 
+ [workspace.package]
+ authors    = ["Penumbra Labs <team@penumbralabs.xyz"]
+ edition    = "2021"
+-version    = "2.0.6"
++version    = "2.0.9"
+ repository = "https://github.com/penumbra-zone/penumbra"
+ homepage   = "https://penumbra.zone"
+ license    = "MIT OR Apache-2.0"
+ 
+ [workspace.dependencies]
+ anyhow                           = { version = "1.0.75" }
+ ark-ec                           = { default-features = false, version = "0.4.2" }
+ ark-ff                           = { default-features = false, version = "0.4.2" }
+ ark-groth16                      = { default-features = false, version = "0.4.0" }
+ ark-r1cs-std                     = { default-features = false, version = "0.4.0" }
+ ark-relations                    = { version = "0.4" }
+ ark-serialize                    = { version = "0.4.2" }
+ ark-snark                        = { version = "0.4.0" }
+ ark-std                          = { default-features = false, version = "0.4" }
+ assert_cmd                       = { version = "2.0" }
+ async-stream                     = { version = "0.3.5" }
+ async-trait                      = { version = "0.1.52" }
+ axum                             = { version = "0.7.9" }
+ axum-extra                       = { version = "0.9.6" }
+ axum-server                      = { version = "0.7.1" }
+ base64                           = { version = "0.21.2" }
+ bech32                           = { version = "0.8.1" }
+ bincode                          = { version = "1.3.3" }
+ bitvec                           = { version = "1" }
+ blake2b_simd                     = { version = "1" }
+ bytes                            = { version = "1.2" }
+ camino                           = { version = "1" }
+ chacha20poly1305                 = { version = "0.9.0" }
+ chrono                           = { default-features = false, version = "0.4" }
+ clap                             = { version = "3.2" }
+ cnidarium                        = { version = "0.83", default-features = false}
+-cnidarium-component              = { default-features = false, version = "2.0.6", path = "crates/cnidarium-component" }
+-cometindex                       = { version = "2.0.6", path = "crates/util/cometindex" }
++cnidarium-component              = { default-features = false, version = "2.0.9", path = "crates/cnidarium-component" }
++cometindex                       = { version = "2.0.9", path = "crates/util/cometindex" }
+ criterion                        = { version = "0.4" }
+ decaf377                         = { default-features = false, version = "0.10.1" }
+-decaf377-fmd                     = { version = "2.0.6", path = "crates/crypto/decaf377-fmd" }
+-decaf377-ka                      = { version = "2.0.6", path = "crates/crypto/decaf377-ka" }
++decaf377-fmd                     = { version = "2.0.9", path = "crates/crypto/decaf377-fmd" }
++decaf377-ka                      = { version = "2.0.9", path = "crates/crypto/decaf377-ka" }
+ decaf377-rdsa                    = { version = "0.11.0" }
+ derivative                       = { version = "2.2" }
+ directories                      = { version = "4.0.1" }
+ ed25519-consensus                = { version = "2.1" }
+ ethnum                           = { version = "1.3" }
+ futures                          = { version = "0.3.28" }
+ hex                              = { version = "0.4.3" }
+ http                             = { version = "1.2.0" }
+ http-body                        = { version = "1.0.1" }
+ http-body-util                   = { version = "0.1.2" }
+ humantime                        = { version = "2.1" }
+ ibc-proto                        = { default-features = false, version = "0.51.1" }
+ ibc-types                        = { default-features = false, version = "0.15.1" }
+ ibig                             = { version = "0.3" }
+ ics23                            = { version = "0.12.0" }
+ im                               = { version = "^15.1.0" }
+ indicatif                        = { version = "0.16" }
+ jmt                              = { version = "0.11", features = ["migration"] }
+ ledger-lib = { git = "https://github.com/ledger-community/rust-ledger", rev = "510bb3ca30639af4bdb12a918b6bbbdb75fa5f52" }
+ ledger-proto = { git = "https://github.com/ledger-community/rust-ledger", rev = "510bb3ca30639af4bdb12a918b6bbbdb75fa5f52" }
+ metrics                          = { version = "0.24.1" }
+ metrics-exporter-prometheus      = { version = "0.16", features = ["http-listener"] }
+ metrics-tracing-context          = { version = "0.17.0" }
+ num-bigint                       = { version = "0.4" }
+ num-traits                       = { default-features = false, version = "0.2.15" }
+ once_cell                        = { version = "1.8" }
+ parking_lot                      = { version = "0.12.1" }
+ pbjson                           = { version = "0.7.0" }
+ pbjson-types                     = { version = "0.7.0" }
+-penumbra-sdk-app                     = { default-features = false, version = "2.0.6", path = "crates/core/app" }
+-penumbra-sdk-asset                   = { default-features = false, version = "2.0.6", path = "crates/core/asset" }
+-penumbra-sdk-community-pool          = { default-features = false, version = "2.0.6", path = "crates/core/component/community-pool" }
+-penumbra-sdk-compact-block           = { default-features = false, version = "2.0.6", path = "crates/core/component/compact-block" }
+-penumbra-sdk-custody                 = { version = "2.0.6", path = "crates/custody" }
+-penumbra-sdk-custody-ledger-usb      = { version = "2.0.6", path = "crates/custody-ledger-usb" }
+-penumbra-sdk-auction                 = { default-features = false, version = "2.0.6", path = "crates/core/component/auction" }
+-penumbra-sdk-dex                     = { default-features = false, version = "2.0.6", path = "crates/core/component/dex" }
+-penumbra-sdk-distributions           = { default-features = false, version = "2.0.6", path = "crates/core/component/distributions" }
+-penumbra-sdk-fee                     = { default-features = false, version = "2.0.6", path = "crates/core/component/fee" }
+-penumbra-sdk-funding                 = { default-features = false, version = "2.0.6", path = "crates/core/component/funding" }
+-penumbra-sdk-governance              = { default-features = false, version = "2.0.6", path = "crates/core/component/governance" }
+-penumbra-sdk-ibc                     = { default-features = false, version = "2.0.6", path = "crates/core/component/ibc" }
+-penumbra-sdk-keys                    = { default-features = false, version = "2.0.6", path = "crates/core/keys" }
+-penumbra-sdk-mock-client             = { version = "2.0.6", path = "crates/test/mock-client" }
+-penumbra-sdk-mock-consensus          = { version = "2.0.6", path = "crates/test/mock-consensus" }
+-penumbra-sdk-mock-tendermint-proxy   = { version = "2.0.6", path = "crates/test/mock-tendermint-proxy" }
+-penumbra-sdk-num                     = { default-features = false, version = "2.0.6", path = "crates/core/num" }
+-penumbra-sdk-proof-params            = { default-features = false, version = "2.0.6", path = "crates/crypto/proof-params" }
+-penumbra-sdk-proof-setup             = { version = "2.0.6", path = "crates/crypto/proof-setup" }
+-penumbra-sdk-proto                   = { default-features = false, version = "2.0.6", path = "crates/proto" }
+-penumbra-sdk-sct                     = { default-features = false, version = "2.0.6", path = "crates/core/component/sct" }
+-penumbra-sdk-shielded-pool           = { default-features = false, version = "2.0.6", path = "crates/core/component/shielded-pool" }
+-penumbra-sdk-stake                   = { default-features = false, version = "2.0.6", path = "crates/core/component/stake" }
+-penumbra-sdk-tct                     = { default-features = false, version = "2.0.6", path = "crates/crypto/tct" }
+-penumbra-sdk-test-subscriber         = { version = "2.0.6", path = "crates/test/tracing-subscriber" }
+-penumbra-sdk-tower-trace             = { version = "2.0.6", path = "crates/util/tower-trace" }
+-penumbra-sdk-transaction             = { default-features = false, version = "2.0.6", path = "crates/core/transaction" }
+-penumbra-sdk-txhash                  = { default-features = false, version = "2.0.6", path = "crates/core/txhash" }
+-penumbra-sdk-view                    = { version = "2.0.6", path = "crates/view" }
+-penumbra-sdk-wallet                  = { version = "2.0.6", path = "crates/wallet" }
++penumbra-sdk-app                     = { default-features = false, version = "2.0.9", path = "crates/core/app" }
++penumbra-sdk-asset                   = { default-features = false, version = "2.0.9", path = "crates/core/asset" }
++penumbra-sdk-community-pool          = { default-features = false, version = "2.0.9", path = "crates/core/component/community-pool" }
++penumbra-sdk-compact-block           = { default-features = false, version = "2.0.9", path = "crates/core/component/compact-block" }
++penumbra-sdk-custody                 = { version = "2.0.9", path = "crates/custody" }
++penumbra-sdk-custody-ledger-usb      = { version = "2.0.9", path = "crates/custody-ledger-usb" }
++penumbra-sdk-auction                 = { default-features = false, version = "2.0.9", path = "crates/core/component/auction" }
++penumbra-sdk-dex                     = { default-features = false, version = "2.0.9", path = "crates/core/component/dex" }
++penumbra-sdk-distributions           = { default-features = false, version = "2.0.9", path = "crates/core/component/distributions" }
++penumbra-sdk-fee                     = { default-features = false, version = "2.0.9", path = "crates/core/component/fee" }
++penumbra-sdk-funding                 = { default-features = false, version = "2.0.9", path = "crates/core/component/funding" }
++penumbra-sdk-governance              = { default-features = false, version = "2.0.9", path = "crates/core/component/governance" }
++penumbra-sdk-ibc                     = { default-features = false, version = "2.0.9", path = "crates/core/component/ibc" }
++penumbra-sdk-keys                    = { default-features = false, version = "2.0.9", path = "crates/core/keys" }
++penumbra-sdk-mock-client             = { version = "2.0.9", path = "crates/test/mock-client" }
++penumbra-sdk-mock-consensus          = { version = "2.0.9", path = "crates/test/mock-consensus" }
++penumbra-sdk-mock-tendermint-proxy   = { version = "2.0.9", path = "crates/test/mock-tendermint-proxy" }
++penumbra-sdk-num                     = { default-features = false, version = "2.0.9", path = "crates/core/num" }
++penumbra-sdk-proof-params            = { default-features = false, version = "2.0.9", path = "crates/crypto/proof-params" }
++penumbra-sdk-proof-setup             = { version = "2.0.9", path = "crates/crypto/proof-setup" }
++penumbra-sdk-proto                   = { default-features = false, version = "2.0.9", path = "crates/proto" }
++penumbra-sdk-sct                     = { default-features = false, version = "2.0.9", path = "crates/core/component/sct" }
++penumbra-sdk-shielded-pool           = { default-features = false, version = "2.0.9", path = "crates/core/component/shielded-pool" }
++penumbra-sdk-stake                   = { default-features = false, version = "2.0.9", path = "crates/core/component/stake" }
++penumbra-sdk-tct                     = { default-features = false, version = "2.0.9", path = "crates/crypto/tct" }
++penumbra-sdk-test-subscriber         = { version = "2.0.9", path = "crates/test/tracing-subscriber" }
++penumbra-sdk-tower-trace             = { version = "2.0.9", path = "crates/util/tower-trace" }
++penumbra-sdk-transaction             = { default-features = false, version = "2.0.9", path = "crates/core/transaction" }
++penumbra-sdk-txhash                  = { default-features = false, version = "2.0.9", path = "crates/core/txhash" }
++penumbra-sdk-view                    = { version = "2.0.9", path = "crates/view" }
++penumbra-sdk-wallet                  = { version = "2.0.9", path = "crates/wallet" }
+ pin-project                      = { version = "1.0.12" }
+ pin-project-lite                 = { version = "0.2.9" }
+ poseidon377                      = { version = "1.2.0" }
+ proptest                         = { version = "1.6" }
+ proptest-derive                  = { version = "0.5.1" }
+ prost-types                      = { version = "0.13.4" }
+ prost                            = { version = "0.13.4" }
+ r2d2                             = { version = "0.8" }
+ r2d2_sqlite                      = { version = "0.25" }
+ rand                             = { version = "0.8.5" }
+ rand_chacha                      = { version = "0.3.1" }
+ rand_core                        = { version = "0.6.4" }
+ regex                            = { version = "1.8.1" }
+ reqwest                          = { version = "0.12.9", features = ["json", "stream"] }
+ rocksdb                          = { version = "0.21.0" }
+ rpassword                        = { version = "7" }
+ rstest                           = { version = "0.24.0" }
+ rustls                           = { version = "0.23.21" }
+ serde                            = { version = "1.0.186" }
+ serde_json                       = { version = "1.0.96" }
+ serde_unit_struct                = { version = "0.1" }
+ serde_with                       = { version = "3.5.1" }
+ sha2                             = { version = "0.10" }
+ sqlx                             = { version = "0.8", features = ["bigdecimal", "postgres", "runtime-tokio", "tls-rustls"] }
+ tap                              = "1.0.1"
+ tempfile                         = { version = "3.3.0" }
+ tendermint                       = { default-features = false, version = "0.40.3" }
+ tendermint-config                = { version = "0.40.3" }
+ tendermint-light-client-verifier = { version = "0.40.3" }
+ tendermint-proto                 = { version = "0.40.3" }
+ tendermint-rpc                   = { version = "0.40.3" }
+ termion                          = { version = "3" }
+ thiserror                        = { version = "1.0" }
+ time                             = { version = "0.3" }
+ tokio                            = { version = "1.39.0" }
+ tokio-stream                     = { version = "0.1.8" }
+ tokio-util                       = { version = "0.7" }
+ toml                             = { version = "0.7" }
+ tonic                            = { version = "0.12.3" }
+ tonic-reflection                 = { version = "0.12.3" }
+ tonic-web                        = { version = "0.12.3" }
+ tower                            = { version = "0.4.0" }
+ tower-http                       = { version = "0.6.2" }
+ tower-service                    = { version = "0.3.2" }
+ tracing                          = { version = "0.1" }
+ tracing-subscriber               = { version = "0.3.17", features = ["env-filter"] }
+ url                              = { version = "2.2" }
+ getrandom                        = { version = "0.2", default-features = false }
+ 
+ [patch.crates-io]
+ # Without this, the git dependency for ledger-lib will depend on the crates.io v0.1 version,
+ # and will fail to build.
+ ledger-proto = { git = "https://github.com/ledger-community/rust-ledger", rev = "510bb3ca30639af4bdb12a918b6bbbdb75fa5f52" }
+diff --git a/crates/bin/pd/Cargo.toml b/crates/bin/pd/Cargo.toml
+index 0a7690f25..8edf897cf 100644
+--- a/crates/bin/pd/Cargo.toml
++++ b/crates/bin/pd/Cargo.toml
+@@ -1,130 +1,130 @@
+ [package]
+ name = "pd"
+ version = { workspace = true }
+ authors = { workspace = true }
+ edition = { workspace = true }
+ description = "The node software for the Penumbra Zone"
+ repository = { workspace = true }
+ homepage = { workspace = true }
+ license = { workspace = true }
+ publish = false
+ rust-version = "1.75"
+ 
+ [package.metadata.dist]
+ dist = true
+ 
+ [features]
+ default = ["download-proving-keys"]
+ std = ["ibc-types/std"]
+ download-proving-keys = ["penumbra-sdk-proof-params/download-proving-keys"]
+ 
+ # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+ 
+ [build-dependencies]
+ anyhow = "1"
+ 
+ [dependencies]
+ anyhow                           = { workspace = true }
+ ark-ff                           = { workspace = true, default-features = true }
+ async-stream                     = { workspace = true }
+ async-trait                      = { workspace = true }
+ axum                             = { workspace = true, features = ["http2"] }
+ axum-server                      = { workspace = true, features = ["tls-rustls"] }
+ base64                           = { workspace = true }
+ bincode                          = { workspace = true }
+ blake2b_simd                     = { workspace = true }
+ bytes                            = { workspace = true }
+ chrono                           = { workspace = true, default-features = false, features = ["serde"] }
+ clap                             = { workspace = true, features = ["derive", "env"] }
+ cnidarium                        = { workspace = true, features = ["migration", "rpc"], default-features = true }
+ csv                              = "1.1"
+ decaf377                         = { workspace = true, features = ["parallel"], default-features = true }
+ decaf377-rdsa                    = { workspace = true }
+ directories                      = { workspace = true }
+ ed25519-consensus                = { workspace = true }
+ flate2                           = "1.0.28"
+ fs_extra                         = "1.3.0"
+ futures                          = { workspace = true }
+ hex                              = { workspace = true }
+ http                             = { workspace = true }
+ ibc-proto                        = { workspace = true, default-features = false, features = ["server"] }
+ ibc-types                        = { workspace = true, default-features = true }
+ ics23                            = { workspace = true }
+ jmt                              = { workspace = true }
+ metrics                          = { workspace = true }
+ metrics-exporter-prometheus      = { workspace = true }
+ metrics-process                  = "2.4.0"
+ metrics-tracing-context          = { workspace = true }
+ metrics-util                     = "0.18.0"
+ mime_guess                       = "2"
+ once_cell                        = { workspace = true }
+ pbjson-types                     = { workspace = true }
+ penumbra-sdk-app                     = { workspace = true, default-features = true }
+ penumbra-sdk-asset                   = { workspace = true, default-features = true }
+-penumbra-sdk-auto-https              = { version = "2.0.6", path = "../../util/auto-https" }
++penumbra-sdk-auto-https              = { version = "2.0.9", path = "../../util/auto-https" }
+ penumbra-sdk-compact-block           = { workspace = true, default-features = true }
+ penumbra-sdk-custody                 = { workspace = true }
+ penumbra-sdk-auction                 = { workspace = true, features = ["parallel"], default-features = true }
+ penumbra-sdk-dex                     = { workspace = true, features = ["parallel"], default-features = true }
+ penumbra-sdk-fee                     = { workspace = true, default-features = true }
+ penumbra-sdk-governance              = { workspace = true, features = ["parallel"], default-features = true }
+ penumbra-sdk-ibc                     = { workspace = true, features = ["rpc"], default-features = true }
+ penumbra-sdk-keys                    = { workspace = true, default-features = true }
+ penumbra-sdk-num                     = { workspace = true, default-features = true }
+ penumbra-sdk-proto                   = { workspace = true, default-features = true }
+ penumbra-sdk-sct                     = { workspace = true, default-features = true }
+ penumbra-sdk-shielded-pool           = { workspace = true, features = ["parallel"], default-features = true }
+ penumbra-sdk-stake                   = { workspace = true, features = ["parallel"], default-features = true }
+ penumbra-sdk-tct                     = { workspace = true, default-features = true }
+-penumbra-sdk-tendermint-proxy        = { version = "2.0.6", path = "../../util/tendermint-proxy" }
++penumbra-sdk-tendermint-proxy        = { version = "2.0.9", path = "../../util/tendermint-proxy" }
+ penumbra-sdk-tower-trace             = { workspace = true }
+ penumbra-sdk-transaction             = { workspace = true, default-features = true }
+ pin-project                      = { workspace = true }
+ pin-project-lite                 = { workspace = true }
+ prost                            = { workspace = true }
+ prost-types                      = { workspace = true }
+ rand                             = { workspace = true }
+ rand_chacha                      = { workspace = true }
+ rand_core                        = { workspace = true, features = ["getrandom"] }
+ regex                            = { workspace = true }
+ reqwest                          = { workspace = true }
+ rocksdb                          = { workspace = true }
+ rustls                           = { workspace = true }
+ serde                            = { workspace = true, features = ["derive"] }
+ serde_json                       = { workspace = true }
+ serde_with                       = { workspace = true, features = ["hex"] }
+ sha2                             = { workspace = true }
+ tar                              = "0.4.40"
+ tempfile                         = { workspace = true }
+ tendermint                       = { workspace = true }
+ tendermint-config                = { workspace = true }
+ tendermint-light-client-verifier = { workspace = true }
+ tendermint-proto = { workspace = true }
+ tendermint-rpc = { workspace = true, features = ["http-client"] }
+ tokio = { workspace = true, features = ["full"] }
+ tokio-stream = { workspace = true }
+ tokio-util = { workspace = true, features = ["compat"] }
+ toml = { workspace = true }
+ tonic = { workspace = true }
+ tonic-reflection = { workspace = true }
+ tonic-web = { workspace = true }
+ tower = { workspace = true, features = ["full"] }
+ tower-abci = "0.18"
+ tower-actor = "0.1.0"
+ tower-http = { workspace = true, features = ["cors", "trace"] }
+ tower-service = { workspace = true }
+ tracing = { workspace = true }
+ tracing-subscriber = { workspace = true, features = ["env-filter", "ansi"] }
+ url = { workspace = true }
+ zip = "0.6"
+ 
+ [dev-dependencies]
+ penumbra-sdk-proof-params = { workspace = true, features = [
+     "bundled-proving-keys",
+     "download-proving-keys",
+ ], default-features = true }
+ assert_cmd = { workspace = true }
+ predicates = "2.1"
+ prost-reflect = "0.14.3"
+ regex = { workspace = true }
+ rstest = { workspace = true }
+diff --git a/crates/bin/pd/src/cli.rs b/crates/bin/pd/src/cli.rs
+index 52e3b1d0d..e3c27da51 100644
+--- a/crates/bin/pd/src/cli.rs
++++ b/crates/bin/pd/src/cli.rs
+@@ -1,251 +1,277 @@
+ //! Command-line interface utilities for the `pd` daemon.
+ 
+ use {
+     clap::{Parser, Subcommand},
+     std::{net::SocketAddr, path::PathBuf},
+     url::Url,
+ };
+ 
+ #[derive(Debug, Parser)]
+ #[clap(name = "pd", about = "The Penumbra daemon.", version)]
+ pub struct Opt {
+     /// Command to run.
+     #[clap(subcommand)]
+     pub cmd: RootCommand,
+ }
+ 
+ #[derive(Debug, Subcommand)]
+ pub enum RootCommand {
+     /// Starts the Penumbra daemon.
+     Start {
+         /// The path used to store all `pd`-related data and configuration.
+         /// If unset, defaults to ~/.penumbra/network_data/node0/pd.
+         #[clap(long, env = "PENUMBRA_PD_HOME", display_order = 100)]
+         home: Option<PathBuf>,
+         /// Bind the ABCI server to this socket.
+         ///
+         /// The ABCI server is used by Tendermint to drive the application state.
+         #[clap(
+             short,
+             long,
+             env = "PENUMBRA_PD_ABCI_BIND",
+             default_value = "127.0.0.1:26658",
+             display_order = 400
+         )]
+         // TODO: Add support for Unix domain sockets, available in tower-abci >=0.10.0
+         abci_bind: SocketAddr,
+         /// Bind the gRPC server to this socket.
+         ///
+         /// The gRPC server supports both grpc (HTTP/2) and grpc-web (HTTP/1.1) clients.
+         ///
+         /// If `grpc_auto_https` is set, this defaults to `0.0.0.0:443` and uses HTTPS.
+         ///
+         /// If `grpc_auto_https` is not set, this defaults to `127.0.0.1:8080` without HTTPS.
+         #[clap(short, long, env = "PENUMBRA_PD_GRPC_BIND", display_order = 201)]
+         grpc_bind: Option<SocketAddr>,
+         /// If set, serve gRPC using auto-managed HTTPS with this domain name.
+         ///
+         /// NOTE: This option automatically provisions TLS certificates from
+         /// Let's Encrypt and caches them in the `home` directory.  The
+         /// production LE CA has rate limits, so be careful using this option
+         /// with `pd network unsafe-reset-all`, which will delete the certificates
+         /// and force re-issuance, possibly hitting the rate limit. See the
+         /// `--acme-staging` option.
+         #[clap(long, value_name = "DOMAIN", display_order = 200)]
+         grpc_auto_https: Option<String>,
+         /// Enable use of the LetsEncrypt ACME staging API (https://letsencrypt.org/docs/staging-environment/),
+         /// which is more forgiving of ratelimits. Set this option to `true`
+         /// if you're trying out the `--grpc-auto-https` option for the first time,
+         /// to validate your configuration, before subjecting yourself to production
+         /// ratelimits. This option has no effect if `--grpc-auto-https` is not set.
+         #[clap(long, display_order = 201)]
+         acme_staging: bool,
+         /// Bind the metrics endpoint to this socket.
+         #[clap(
+             short,
+             long,
+             env = "PENUMBRA_PD_METRICS_BIND",
+             default_value = "127.0.0.1:9000",
+             display_order = 300
+         )]
+         metrics_bind: SocketAddr,
+         /// The JSON-RPC address of the CometBFT node driving this `pd`
+         /// instance.
+         ///
+         /// This is used to proxy requests from the gRPC server to CometBFT,
+         /// so clients only need to connect to one endpoint and don't need to
+         /// worry about the peculiarities of CometBFT's JSON-RPC encoding
+         /// format.
+         #[clap(
+             short,
+             long,
+             env = "PENUMBRA_PD_COMETBFT_PROXY_URL",
+             default_value = "http://127.0.0.1:26657",
+             display_order = 401,
+             // Support old arg name for a while, as we migrate Tendermint -> CometBFT.
+             alias = "tendermint-addr",
+         )]
+         cometbft_addr: Url,
+         /// Enable expensive RPCs, currently a no-op.
+         #[clap(short, long, display_order = 500)]
+         enable_expensive_rpc: bool,
+     },
+ 
+     /// Generate, join, or reset a network.
+     Network {
+         /// Path to directory to store output in. Must not exist. Defaults to
+         /// ~/.penumbra/network_data".
+         #[clap(long)]
+         network_dir: Option<PathBuf>,
+         #[clap(subcommand)]
+         net_cmd: NetworkCommand,
+     },
+ 
+     /// Export the storage state the full node.
+     Export {
+         /// The home directory of the full node.
+         #[clap(long, env = "PENUMBRA_PD_HOME", display_order = 100)]
+         home: PathBuf,
+         /// The directory where the exported node state will be written.
+         #[clap(long, display_order = 200, alias = "export-path")]
+         export_directory: PathBuf,
+         /// An optional filepath for a compressed archive containing the exported
+         /// node state, e.g. ~/pd-backup.tar.gz.
+         #[clap(long, display_order = 200)]
+         export_archive: Option<PathBuf>,
+         /// Whether to prune the JMT tree.
+         #[clap(long, display_order = 300)]
+         prune: bool,
+     },
+ 
+     /// Run a migration before resuming post-upgrade.
+     Migrate {
+         /// The home directory of the full node.
+         ///
+         /// Migration is performed in-place on the home directory.
+         #[clap(long, env = "PENUMBRA_PD_HOME", display_order = 100)]
+         home: Option<PathBuf>,
+         /// If set, also migrate the CometBFT state located in this home directory.
+         /// If both `--home` and `--comet-home` are unset, will attempt to migrate
+         /// CometBFT state alongside the auto-located `pd` state.
+         // Note: this does _NOT_ use an env var because we are trying to
+         // get explicit consent to muck around in another daemon's state.
+         #[clap(long, display_order = 200)]
+         comet_home: Option<PathBuf>,
+         /// If set, force a migration to occur even if the chain is not halted.
+         /// Will not override a detected mismatch in state versions, or on signs
+         /// of corruption. This is "expert mode" and potentially destructive.
+         #[clap(long, display_order = 1000)]
+         force: bool,
+         /// If set, edit local state to permit the node to start, despite
+         /// a pre-existing halt order, e.g. via governance. This option
+         /// can be useful for relayer operators, to run a temporary archive node
+         /// across upgrade boundaries.
+         #[clap(long, display_order = 1000)]
+         ready_to_start: bool,
+     },
++
++    /// Coordinated-restart migration for a chain halted by liveness loss: remove the given
++    /// validators from the active set (Jailed, or Disabled with --disable) and write a
++    /// checkpoint genesis. Does not require the halt bit. EXPERT MODE: all participants must
++    /// run the identical binary with the identical --remove list.
++    MigrateRestart {
++        /// The home directory of the full node (contains `rocksdb`).
++        #[clap(long, env = "PENUMBRA_PD_HOME", display_order = 100)]
++        home: Option<PathBuf>,
++        /// If set, also write the genesis into this CometBFT home and bump its
++        /// priv_validator_state height.
++        #[clap(long, display_order = 200)]
++        comet_home: Option<PathBuf>,
++        /// CometBFT consensus address (40 hex chars) of a validator to remove. Repeatable.
++        #[clap(long = "remove", required = true, display_order = 300)]
++        remove: Vec<String>,
++        /// Mark removed validators Disabled (no downtime penalty) instead of Jailed.
++        #[clap(long, display_order = 400)]
++        disable: bool,
++        /// DRILL ONLY: override the chain id so the drill can never talk to mainnet.
++        #[clap(long, hide = true)]
++        unsafe_test_chain_id: Option<String>,
++        /// DRILL ONLY: replace a kept validator's consensus key, `OLD_B64:NEW_B64`. Repeatable.
++        #[clap(long, hide = true)]
++        unsafe_test_rekey: Vec<String>,
++    },
+ }
+ 
+ #[derive(Debug, Subcommand)]
+ pub enum NetworkCommand {
+     /// Generates a directory structure containing necessary files to create a new
+     /// network config from genesis, based on input configuration.
+     Generate {
+         /// The `timeout_commit` parameter (block interval) to configure Tendermint with.
+         #[clap(long)]
+         timeout_commit: Option<tendermint::Timeout>,
+         /// Number of blocks per epoch.
+         #[clap(long)]
+         epoch_duration: Option<u64>,
+         /// Number of blocks that must elapse before unbonding stake is released.
+         #[clap(long)]
+         unbonding_delay: Option<u64>,
+         /// Maximum number of validators in the consensus set.
+         #[clap(long)]
+         active_validator_limit: Option<u64>,
+         /// Whether to preserve the chain ID (useful for public networks) or append a random suffix (useful for dev/testing).
+         #[clap(long)]
+         preserve_chain_id: bool,
+         /// Path to CSV file containing initial allocations [default: latest testnet].
+         #[clap(long, parse(from_os_str))]
+         allocations_input_file: Option<PathBuf>,
+         /// Penumbra wallet address to include in genesis allocations.
+         /// Intended to make dev experience nicer on first run:
+         /// generate a wallet, view its address, then generate a devnet
+         /// with that address included in the base allocations.
+         #[clap(long)]
+         allocation_address: Option<penumbra_sdk_keys::Address>,
+         #[clap(long, parse(from_os_str))]
+         /// Path to JSON file containing initial validator configs [default: latest testnet].
+         validators_input_file: Option<PathBuf>,
+         /// Testnet name [default: latest testnet].
+         #[clap(long)]
+         chain_id: Option<String>,
+         /// The duration, in number of blocks, that a governance proposal
+         /// can be voted on.
+         #[clap(long)]
+         proposal_voting_blocks: Option<u64>,
+         /// The fixed gas price for all transactions on the network.
+         /// Described as "simple" because the single value will be reused
+         /// for all gas price types: block space, compact block space, verification, and execution.
+         /// The numeric value is one-thousandths of the base unit of the fee token,
+         /// so `--gas-price-simple=1000` means all resources will have a cost of 1upenumbra.
+         #[clap(long)]
+         gas_price_simple: Option<u64>,
+         /// Base hostname for a validator's p2p service. If multiple validators
+         /// exist in the genesis, e.g. via `--validators-input-file`, then
+         /// numeric suffixes are automatically added, e.g. "-0", "-1", etc.
+         /// Helpful for when you know the validator DNS names ahead of time,
+         /// e.g. in Kubernetes service addresses. These option is most useful
+         /// to provide peering on a private network setup. If you plan to expose
+         /// the validator P2P services to the internet, see the `--external-addresses` option.
+         #[clap(long)]
+         peer_address_template: Option<String>,
+         /// Public addresses and ports for the Tendermint P2P services of the genesis
+         /// validator. Accepts comma-separated values, to support multiple validators.
+         /// If `--validators-input-file` is used to increase the number
+         /// of validators, and the `--external-addresses` flag is set, then the number of
+         /// external addresses must equal the number of validators. See the
+         /// `--peer-address-template` flag if you don't plan to expose the network
+         /// to public peers.
+         #[clap(long)]
+         // TODO we should support DNS names here. However, there are complications:
+         // https://github.com/tendermint/tendermint/issues/1521
+         external_addresses: Option<String>,
+     },
+ 
+     /// Like `network generate`, but joins the network to which the specified node belongs.
+     /// Requires a URL for the CometBFT RPC for the bootstrap node.
+     Join {
+         /// URL of the remote CometBFT RPC endpoint for bootstrapping connection.
+         #[clap(env = "PENUMBRA_PD_JOIN_URL")]
+         node: Url,
+         /// Optional URL of archived node state in .tar.gz format. The archive will be
+         /// downloaded and extracted locally, allowing the node to join a network at a block height
+         /// higher than 0. Supports loading the archive from a local file, if set with file scheme
+         /// explicitly, e.g. `file:///path/to/archive.tar.gz`.
+         #[clap(long, env = "PENUMBRA_PD_ARCHIVE_URL")]
+         archive_url: Option<Url>,
+         /// Human-readable name to identify node on network
+         // Default: 'node-#'
+         #[clap(long, env = "PENUMBRA_PD_TM_EXTERNAL_ADDR")]
+         moniker: Option<String>,
+         /// Public URL to advertise for this node's Tendermint P2P service.
+         /// Setting this option will instruct other nodes on the network to connect
+         /// to yours. Must be in the form of a socket, e.g. "1.2.3.4:26656".
+         #[clap(long, env = "PENUMBRA_PD_TM_EXTERNAL_ADDR")]
+         external_address: Option<SocketAddr>,
+         /// When generating Tendermint config, use this socket to bind the Tendermint RPC service.
+         #[clap(long, env = "PENUMBRA_PD_TM_RPC_BIND", default_value = "0.0.0.0:26657")]
+         tendermint_rpc_bind: SocketAddr,
+         /// When generating Tendermint config, use this socket to bind the Tendermint P2P service.
+         #[clap(long, env = "PENUMBRA_PD_TM_P2P_BIND", default_value = "0.0.0.0:26656")]
+         tendermint_p2p_bind: SocketAddr,
+         /// Leave the downloaded archive file on disk after extraction.
+         #[clap(long, env = "PENUMBRA_PD_LEAVE_ARCHIVE", action)]
+         leave_archive: bool,
+     },
+ 
+     /// Reset all `pd` network state. This is a destructive action!
+     UnsafeResetAll {},
+ }
+diff --git a/crates/bin/pd/src/main.rs b/crates/bin/pd/src/main.rs
+index 63646233a..4b642cf9d 100644
+--- a/crates/bin/pd/src/main.rs
++++ b/crates/bin/pd/src/main.rs
+@@ -1,513 +1,581 @@
+ #![allow(clippy::clone_on_copy)]
+ #![deny(clippy::unwrap_used)]
+ #![recursion_limit = "512"]
+ use std::io::IsTerminal as _;
+ use std::{error::Error, process::exit};
+ 
+ use metrics_tracing_context::{MetricsLayer, TracingContextLayer};
+ use metrics_util::layers::Stack;
+ 
+ use anyhow::{anyhow, Context};
+ use cnidarium::Storage;
+ use metrics_exporter_prometheus::PrometheusBuilder;
+ use pd::{
+     cli::{NetworkCommand, Opt, RootCommand},
+     migrate::Migration::{Mainnet4, ReadyToStart},
+     network::{
+         config::{get_network_dir, parse_tm_address, url_has_necessary_parts},
+         generate::NetworkConfig,
+         join::network_join,
+     },
+ };
+ use penumbra_sdk_app::app_version::check_and_update_app_version;
+ use penumbra_sdk_app::{APP_VERSION, SUBSTORE_PREFIXES};
+ use penumbra_sdk_tower_trace::remote_addr;
+ use rand::Rng;
+ use rand_core::OsRng;
+ use rustls::crypto::aws_lc_rs;
+ use tendermint_config::net::Address as TendermintAddress;
+ use tower::ServiceBuilder;
+ use tower_http::cors::CorsLayer;
+ use tower_http::trace::TraceLayer;
+ use tracing::Instrument as _;
+ use tracing_subscriber::{prelude::*, EnvFilter};
+ use url::Url;
+ 
+ #[tokio::main]
+ async fn main() -> anyhow::Result<()> {
+     // Validate options immediately.
+     let Opt { cmd } = <Opt as clap::Parser>::parse();
+ 
+     // Instantiate tracing layers.
+     // The MetricsLayer handles enriching metrics output with labels from tracing spans.
+     let metrics_layer = MetricsLayer::new();
+     // The `FmtLayer` is used to print to the console.
+     let fmt_layer = tracing_subscriber::fmt::layer()
+         .with_ansi(std::io::stdout().is_terminal())
+         .with_target(true);
+     // The `EnvFilter` layer is used to filter events based on `RUST_LOG`.
+     let filter_layer = EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info"))?;
+ 
+     // Register the tracing subscribers.
+     let registry = tracing_subscriber::registry()
+         .with(filter_layer)
+         .with(fmt_layer)
+         .with(metrics_layer);
+     registry.init();
+ 
+     // Initialize HTTPS support
+     // We log the error and continue, so the node is operational.
+     if let Err(e) = aws_lc_rs::default_provider().install_default() {
+         tracing::error!("failed to initialize rustls support: {:?}", e);
+     }
+ 
+     tracing::info!(?cmd, version = env!("CARGO_PKG_VERSION"), "running command");
+     match cmd {
+         RootCommand::Start {
+             home,
+             abci_bind,
+             grpc_bind,
+             grpc_auto_https,
+             acme_staging,
+             metrics_bind,
+             cometbft_addr,
+             enable_expensive_rpc,
+         } => {
+             // Use the given `grpc_bind` address if one was specified. If not, we will choose a
+             // default depending on whether or not `grpc_auto_https` was set. See the
+             // `RootCommand::Start::grpc_bind` documentation above.
+             let grpc_bind = {
+                 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+                 const HTTP_DEFAULT: SocketAddr =
+                     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+                 const HTTPS_DEFAULT: SocketAddr =
+                     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 443);
+                 let default = || {
+                     if grpc_auto_https.is_some() {
+                         HTTPS_DEFAULT
+                     } else {
+                         HTTP_DEFAULT
+                     }
+                 };
+                 grpc_bind.unwrap_or_else(default)
+             };
+ 
+             // Ensure we have all necessary parts in the URL
+             if !url_has_necessary_parts(&cometbft_addr) {
+                 anyhow::bail!(
+                     "Failed to parse '--cometbft-addr' as URL: {}",
+                     cometbft_addr
+                 )
+             }
+ 
+             // Unpack home directory. Accept an explicit path, but default
+             // to a sane value if unspecified.
+             let pd_home = match home {
+                 Some(h) => h,
+                 None => get_network_dir(None).join("node0").join("pd"),
+             };
+             let rocksdb_home = pd_home.join("rocksdb");
+ 
+             let storage = Storage::load(rocksdb_home, SUBSTORE_PREFIXES.to_vec())
+                 .await
+                 .context(
+                     "Unable to initialize RocksDB storage - is there another `pd` process running?",
+                 )?;
+             check_and_update_app_version(storage.clone()).await?;
+ 
+             tracing::info!(
+                 APP_VERSION,
+                 ?abci_bind,
+                 ?grpc_bind,
+                 ?grpc_auto_https,
+                 ?acme_staging,
+                 ?metrics_bind,
+                 %cometbft_addr,
+                 ?enable_expensive_rpc,
+                 "starting pd"
+             );
+ 
+             if penumbra_sdk_app::app::App::is_ready(storage.latest_snapshot()).await {
+                 tracing::info!("application ready to start");
+             } else {
+                 tracing::warn!("application is halted, refusing to start");
+                 exit(0)
+             }
+ 
+             let abci_server = tokio::task::spawn(
+                 penumbra_sdk_app::server::new(storage.clone()).listen_tcp(abci_bind),
+             );
+ 
+             let tm_proxy = penumbra_sdk_tendermint_proxy::TendermintProxy::new(cometbft_addr);
+ 
+             let grpc_routes =
+                 penumbra_sdk_app::rpc::routes(&storage, tm_proxy, enable_expensive_rpc)?
+                     .into_axum_router()
+                     .layer(
+                         ServiceBuilder::new().layer(TraceLayer::new_for_grpc().make_span_with(
+                             |req: &http::Request<_>| match remote_addr(req) {
+                                 Some(remote_addr) => {
+                                     tracing::error_span!("grpc", ?remote_addr)
+                                 }
+                                 None => tracing::error_span!("grpc"),
+                             },
+                         )),
+                     );
+ 
+             // Create Axum routes for the frontend app.
+             let frontend = pd::zipserve::router("/app/", pd::MINIFRONT_ARCHIVE_BYTES);
+             let node_status = pd::zipserve::router("/", pd::NODE_STATUS_ARCHIVE_BYTES);
+ 
+             // Now we drop down a layer of abstraction, from tonic to axum, and merge handlers.
+             let router = grpc_routes
+                 .merge(frontend)
+                 .merge(node_status)
+                 // Set rather permissive CORS headers for pd's gRPC: the service
+                 // should be accessible from arbitrary web contexts, such as localhost,
+                 // or any FQDN that wants to reference its data.
+                 .layer(CorsLayer::permissive());
+ 
+             let make_svc = router.into_make_service();
+ 
+             // Now start the GRPC server, initializing an ACME client to use as a certificate
+             // resolver if auto-https has been enabled. if auto-https is not enabled, we will
+             // instead spawn a future that will never return.
+ 
+             // TODO(janis): Is `axum_server::bind` sufficient to accept http1 (for grpc-web) and
+             // http2 (for grpc) requests?
+             //
+             // See also this (about axum::serve, suggesting that it just works out of the box; does that
+             // apply to axum_server::bind as well?)
+             // https://github.com/tokio-rs/axum/blob/c596deafe48ed608775e312eef7d12ddbb0fd424/examples/websockets-http2/src/main.rs#L57-L59
+             let grpc_server = axum_server::bind(grpc_bind);
+             let (grpc_server, acme_worker) = match grpc_auto_https {
+                 Some(domain) => {
+                     let (acceptor, acme_worker) =
+                         penumbra_sdk_auto_https::axum_acceptor(pd_home, domain, !acme_staging);
+                     let acme_worker = tokio::spawn(acme_worker);
+                     let grpc_server =
+                         tokio::task::spawn(grpc_server.acceptor(acceptor).serve(make_svc));
+                     (grpc_server, acme_worker)
+                 }
+                 None => {
+                     let acme_worker = tokio::task::spawn(futures::future::pending());
+                     let grpc_server = tokio::task::spawn(grpc_server.serve(make_svc));
+                     (grpc_server, acme_worker)
+                 }
+             };
+ 
+             // Configure a Prometheus recorder and exporter.
+             use penumbra_sdk_dex::component::metrics::PrometheusBuilderExt;
+             let (recorder, exporter) = PrometheusBuilder::new()
+                 .with_http_listener(metrics_bind)
+                 // Set explicit buckets so that Prometheus endpoint emits true histograms, rather
+                 // than the default distribution type summaries, for time-series data.
+                 .set_buckets_for_dex_metrics()?
+                 .build()
+                 .map_err(|e| {
+                     let msg = format!(
+                         "failed to build prometheus recorder; make sure {} is available",
+                         &metrics_bind
+                     );
+                     tracing::error!(?e, ?msg);
+                     anyhow!(msg)
+                 })?;
+ 
+             Stack::new(recorder)
+                 // Adding the `TracingContextLayer` will add labels from the tracing span to metrics.
+                 // The only labels to be included are "chain_id" and "role".
+                 .push(TracingContextLayer::only_allow(["chain_id", "role"]))
+                 .install()
+                 .expect("global recorder already installed");
+ 
+             // Spawn the HTTP service that lets Prometheus pull metrics from `pd`, and then
+             // register pd's metrics with the exporter.
+             tokio::spawn(exporter);
+             pd::register_metrics();
+             tokio::spawn(pd::metrics::sleep_worker::run());
+             tokio::spawn(pd::metrics::cpu_worker::run());
+ 
+             // We error out if a service errors, rather than keep running.
+             // A special attempt is made to detect whether binding to target socket failed;
+             // if so, we report that error explicitly, otherwise we fall back to reporting
+             // whatever the error was.
+             tokio::select! {
+                 x = abci_server => x?.map_err(|e| {
+                     // The display impl on the ABCI error is sufficiently informative,
+                     // so we don't need special handling of the failed-to-bind case.
+                     let msg = format!("abci server on {} failed: {}", abci_bind, e);
+                     tracing::error!("{}", msg);
+                     anyhow::anyhow!(msg)
+                 }
+                 )?,
+ 
+                 x = grpc_server => x?.map_err(|e| {
+                     let mut msg = format!("grpc server on {} failed: {}", grpc_bind, e);
+                     // Detect if we have a bind error. We need to unpack nested errors, from
+                     // tonic -> hyper -> std. Otherwise, only "transport error" is reported,
+                     // which isn't informative enough to take action.
+                     if let Some(e) = e.source() {
+                         if let Some(e) = e.source() {
+                             if let Some(e) = e.downcast_ref::<std::io::Error>() {
+                                 if e.kind().to_string().contains("address in use") {
+                                     msg = format!("grpc bind socket already in use: {}", grpc_bind);
+                                 }
+                             }
+                         }
+                     }
+                     tracing::error!("{}", msg);
+                     anyhow::anyhow!(msg)
+                 }
+                 )?,
+ 
+                 // if the acme worker returns an error, let's propagate it!
+                 x = acme_worker => x?.map_err(|error| {
+                     let msg = format!("acme worker failed: {error}");
+                     tracing::error!("{}", msg);
+                     anyhow::anyhow!(msg)
+                 })?,
+             };
+         }
+ 
+         RootCommand::Network {
+             net_cmd: NetworkCommand::UnsafeResetAll {},
+             network_dir,
+         } => {
+             let network_dir = get_network_dir(network_dir);
+             if network_dir.exists() {
+                 tracing::info!("removing network directory: {}", network_dir.display());
+                 std::fs::remove_dir_all(network_dir)?;
+             } else {
+                 tracing::info!(
+                     "network directory does not exist, so not removing: {}",
+                     network_dir.display()
+                 );
+             }
+         }
+ 
+         RootCommand::Network {
+             net_cmd:
+                 NetworkCommand::Join {
+                     node,
+                     archive_url,
+                     moniker,
+                     external_address,
+                     tendermint_rpc_bind,
+                     tendermint_p2p_bind,
+                     leave_archive,
+                 },
+             network_dir,
+         } => {
+             let output_dir = get_network_dir(network_dir);
+ 
+             // If the output directory already exists, bail out, rather than overwriting.
+             if output_dir.exists() {
+                 anyhow::bail!(
+                     "output directory {:?} already exists, refusing to overwrite it",
+                     output_dir
+                 );
+             }
+ 
+             // Check whether an external address was set, and parse as TendermintAddress.
+             let external_address: Option<TendermintAddress> = match external_address {
+                 Some(a) => {
+                     let u = Url::parse(format!("tcp://{}", a).as_str())?;
+                     parse_tm_address(None, &u).ok()
+                 }
+                 None => None,
+             };
+ 
+             // Set custom moniker, or default to random string suffix.
+             let node_name = match moniker {
+                 Some(m) => m,
+                 None => format!("node-{}", hex::encode(OsRng.gen::<u32>().to_le_bytes())),
+             };
+ 
+             // Join the target network, looking up network info and writing
+             // local configs for pd and cometbft.
+             network_join(
+                 output_dir.clone(),
+                 node,
+                 &node_name,
+                 external_address,
+                 tendermint_rpc_bind,
+                 tendermint_p2p_bind,
+             )
+             .await?;
+ 
+             // Download and extract archive URL, if set.
+             if let Some(archive_url) = archive_url {
+                 pd::network::join::unpack_state_archive(archive_url, output_dir, leave_archive)
+                     .await?;
+             }
+         }
+ 
+         RootCommand::Network {
+             net_cmd:
+                 NetworkCommand::Generate {
+                     peer_address_template,
+                     timeout_commit,
+                     epoch_duration,
+                     unbonding_delay,
+                     active_validator_limit,
+                     allocations_input_file,
+                     allocation_address,
+                     validators_input_file,
+                     chain_id,
+                     gas_price_simple,
+                     preserve_chain_id,
+                     external_addresses,
+                     proposal_voting_blocks,
+                 },
+             network_dir,
+         } => {
+             // Build script computes the latest testnet name and sets it as an env variable
+             let chain_id = match preserve_chain_id {
+                 true => chain_id.unwrap_or_else(|| env!("PD_LATEST_TESTNET_NAME").to_string()),
+                 false => {
+                     // If preserve_chain_id is false, we append a random suffix to avoid collisions
+                     let randomizer = OsRng.gen::<u32>();
+                     let chain_id =
+                         chain_id.unwrap_or_else(|| env!("PD_LATEST_TESTNET_NAME").to_string());
+                     // We insert an 'x' in the randomized hex string to ensure it's not parsed as a
+                     // revision id.
+                     format!("{}-x{}", chain_id, hex::encode(randomizer.to_le_bytes()))
+                 }
+             };
+ 
+             let output_dir = get_network_dir(network_dir);
+             // If the output directory already exists, bail out, rather than overwriting.
+             if output_dir.exists() {
+                 anyhow::bail!(
+                     "output directory {:?} already exists, refusing to overwrite it",
+                     output_dir
+                 );
+             }
+ 
+             // Unpack external address information into a vec, since there could be multiple
+             // values. We don't yet know how many validators will be in the genesis, but the
+             // Testnet::generate constructor will assert that the number of external addresses,
+             // if Some, is equal to the number of validators.
+             let external_addresses: anyhow::Result<Vec<TendermintAddress>> =
+                 match external_addresses {
+                     Some(a) => a
+                         .split(',')
+                         .map(|x| {
+                             x.parse()
+                                 .context(format!("Failed to parse external address: {x}"))
+                         })
+                         .collect(),
+                     None => Ok(Vec::new()),
+                 };
+ 
+             let external_addresses = external_addresses?;
+ 
+             // Build and write local configs based on input flags.
+             tracing::info!(?chain_id, "Generating network config");
+             let t = NetworkConfig::generate(
+                 &chain_id,
+                 Some(output_dir),
+                 peer_address_template,
+                 Some(external_addresses),
+                 allocations_input_file,
+                 allocation_address,
+                 validators_input_file,
+                 timeout_commit,
+                 active_validator_limit,
+                 epoch_duration,
+                 unbonding_delay,
+                 proposal_voting_blocks,
+                 gas_price_simple,
+             )?;
+             tracing::info!(
+                 n_validators = t.validators.len(),
+                 chain_id = %t.genesis.chain_id,
+                 "Writing config files for network"
+             );
+             t.write_configs()?;
+         }
+         RootCommand::Export {
+             home,
+             export_directory,
+             export_archive,
+             prune,
+         } => {
+             use fs_extra;
+ 
+             // Export state as directory.
+             let src_rocksdb_dir = home.join("rocksdb");
+             tracing::info!(
+                 "copying node state {} -> {}",
+                 src_rocksdb_dir.display(),
+                 export_directory.display()
+             );
+             std::fs::create_dir_all(&export_directory)?;
+             let copy_opts = fs_extra::dir::CopyOptions::new();
+             fs_extra::copy_items(
+                 &[src_rocksdb_dir.as_path()],
+                 export_directory.as_path(),
+                 &copy_opts,
+             )?;
+             tracing::info!("finished copying node state");
+ 
+             let dst_rocksdb_dir = export_directory.join("rocksdb");
+             // If prune=true, then export-directory is required, because we must munge state prior
+             // to compressing. So we'll just mandate the presence of the --export-directory arg
+             // always.
+             if prune {
+                 unimplemented!("storage pruning is unimplemented (for now)")
+             }
+ 
+             // Compress to tarball if requested.
+             if let Some(archive_filepath) = export_archive {
+                 pd::migrate::archive_directory(
+                     dst_rocksdb_dir.clone(),
+                     archive_filepath.clone(),
+                     Some("rocksdb".to_owned()),
+                 )?;
+                 tracing::info!("export complete: {}", archive_filepath.display());
+             } else {
+                 // Provide friendly "OK" message that's still accurate without archiving.
+                 tracing::info!("export complete: {}", export_directory.display());
+             }
+         }
++        RootCommand::MigrateRestart {
++            home,
++            comet_home,
++            remove,
++            disable,
++            unsafe_test_chain_id,
++            unsafe_test_rekey,
++        } => {
++            let (pd_home, comet_home) = match home {
++                Some(h) => (h, comet_home),
++                None => {
++                    let base = get_network_dir(None).join("node0");
++                    (base.join("pd"), Some(base.join("cometbft")))
++                }
++            };
++            let remove = remove
++                .iter()
++                .map(|s| {
++                    let bytes = hex::decode(s.trim())
++                        .with_context(|| format!("invalid hex cometbft address: {s}"))?;
++                    let arr: [u8; 20] = bytes
++                        .try_into()
++                        .map_err(|_| anyhow!("cometbft address must be 20 bytes: {s}"))?;
++                    Ok(arr)
++                })
++                .collect::<anyhow::Result<Vec<[u8; 20]>>>()?;
++            let new_state = if disable {
++                penumbra_sdk_stake::validator::State::Disabled
++            } else {
++                penumbra_sdk_stake::validator::State::Jailed
++            };
++            tracing::info!(
++                ?pd_home,
++                ?comet_home,
++                n_remove = remove.len(),
++                ?new_state,
++                "running restart-fork migration"
++            );
++            let parse_key = |b64: &str| -> anyhow::Result<tendermint::PublicKey> {
++                serde_json::from_value(serde_json::json!({
++                    "type": "tendermint/PubKeyEd25519",
++                    "value": b64,
++                }))
++                .with_context(|| format!("invalid ed25519 consensus key {b64:?}"))
++            };
++            let rekey = unsafe_test_rekey
++                .iter()
++                .map(|pair| {
++                    let (old, new) = pair
++                        .split_once(':')
++                        .with_context(|| format!("expected OLD_B64:NEW_B64, got {pair:?}"))?;
++                    Ok((parse_key(old)?, parse_key(new)?))
++                })
++                .collect::<anyhow::Result<Vec<_>>>()?;
++            let unsafe_test = pd::migrate::restart_fork::UnsafeTestOptions {
++                chain_id: unsafe_test_chain_id,
++                rekey,
++            };
++            if unsafe_test.chain_id.is_some() || !unsafe_test.rekey.is_empty() {
++                tracing::warn!(
++                    ?unsafe_test,
++                    "DRILL MODE: the result is NOT the mainnet restart state"
++                );
++            }
++            pd::migrate::restart_fork::run(pd_home, comet_home, remove, new_state, unsafe_test)
++                .await
++                .context("restart-fork migration failed")?;
++        }
+         RootCommand::Migrate {
+             home,
+             comet_home,
+             force,
+             ready_to_start,
+         } => {
+             let (pd_home, comet_home) = match home {
+                 Some(h) => (h, comet_home),
+                 None => {
+                     // If no pd_home was configured, we're assuming we set up the
+                     // data in the default location, in which case we also know where comet lives.
+                     let base = get_network_dir(None).join("node0");
+                     (base.join("pd"), Some(base.join("cometbft")))
+                 }
+             };
+             let pd_migrate_span = tracing::error_span!("pd_migrate");
+             pd_migrate_span
+                 .in_scope(|| tracing::info!("migrating pd state in {}", pd_home.display()));
+ 
+             if ready_to_start {
+                 tracing::info!("disabling halt order in local state");
+                 ReadyToStart
+                     .migrate(pd_home, comet_home, None, force)
+                     .instrument(pd_migrate_span)
+                     .await
+                     .context("failed to disable halt bit in local state")?;
+                 exit(0)
+             }
+ 
+             let genesis_start = pd::migrate::last_block_timestamp(pd_home.clone()).await?;
+             tracing::info!(?genesis_start, "last block timestamp");
+             Mainnet4
+                 .migrate(pd_home.clone(), comet_home, Some(genesis_start), force)
+                 .instrument(pd_migrate_span)
+                 .await
+                 .context("failed to upgrade state")?;
+         }
+     }
+     Ok(())
+ }
+diff --git a/crates/bin/pd/src/migrate.rs b/crates/bin/pd/src/migrate.rs
+index e780b29c5..cfef0b704 100644
+--- a/crates/bin/pd/src/migrate.rs
++++ b/crates/bin/pd/src/migrate.rs
+@@ -1,279 +1,283 @@
+ //! Logic for handling chain upgrades.
+ //!
+ //! When consensus-breaking changes are made to the Penumbra software,
+ //! node operators must coordinate to perform a chain upgrade.
+ //! This module declares how local `pd` state should be altered, if at all,
+ //! in order to be compatible with the network post-chain-upgrade.
+ mod mainnet1;
+ mod mainnet2;
+ mod mainnet3;
+ mod mainnet4;
+ mod reset_halt_bit;
++pub mod restart_fork;
+ mod simple;
+ mod testnet72;
+ mod testnet74;
+ mod testnet76;
+ mod testnet77;
+ mod testnet78;
+ 
+ use anyhow::{ensure, Context};
+ use penumbra_sdk_governance::StateReadExt;
+ use penumbra_sdk_sct::component::clock::EpochRead;
+ use std::path::{Path, PathBuf};
+ use tracing::instrument;
+ 
+ use cnidarium::Storage;
+ use penumbra_sdk_app::SUBSTORE_PREFIXES;
+ 
+ use flate2::write::GzEncoder;
+ use flate2::Compression;
+ use std::fs::File;
+ 
+ /// The kind of migration that should be performed.
+ #[derive(Debug)]
+ pub enum Migration {
+     /// Set the chain's halt bit to `false`.
+     ReadyToStart,
+     /// A simple migration: adds a key to the consensus state.
+     /// This is useful for testing upgrade mechanisms, including in production.
+     SimpleMigration,
+     /// Testnet-72 migration:
+     /// - Migrate `BatchSwapOutputData` to new protobuf, replacing epoch height with index.
+     Testnet72,
+     /// Testnet-74 migration:
+     /// - Update the base liquidity index to order routable pairs by descending liquidity
+     /// - Update arb executions to include the amount of filled input in the output
+     /// - Add `AuctionParameters` to the consensus state
+     Testnet74,
+     /// Testnet-76 migration:
+     /// - Heal the auction component's VCB tally.
+     /// - Update FMD parameters to new protobuf structure.
+     Testnet76,
+     /// Testnet-77 migration:
+     /// - Reset the halt bit
+     Testnet77,
+     /// Testnet-78 migration:
+     /// - Truncate various user-supplied `String` fields to a maximum length.
+     /// - Populate the DEX NV price idnexes with position data
+     Testnet78,
+     /// Mainnet-1 migration:
+     /// - Restore IBC packet commitments for improperly handled withdrawal attempts
+     Mainnet1,
+     /// Mainnet-2 migration:
+     /// - no-op
+     Mainnet2,
+     /// Mainnet-3 migration:
+     /// - no-op
+     Mainnet3,
+     /// Mainnet-4 migration:
+     /// - no-op
+     ///
+     /// Intended to support code upgrades for Liquidity Tournament support.
+     Mainnet4,
+ }
+ 
+ impl Migration {
+     #[instrument(skip(pd_home, genesis_start, force))]
+     pub async fn migrate(
+         &self,
+         pd_home: PathBuf,
+         comet_home: Option<PathBuf>,
+         genesis_start: Option<tendermint::time::Time>,
+         force: bool,
+     ) -> anyhow::Result<()> {
+         tracing::debug!(
+             ?pd_home,
+             ?genesis_start,
+             ?force,
+             "preparing to run migration!"
+         );
+         let rocksdb_dir = pd_home.join("rocksdb");
+         let storage = Storage::load(rocksdb_dir, SUBSTORE_PREFIXES.to_vec()).await?;
+         ensure!(
+             storage.latest_snapshot().is_chain_halted().await || force,
+             "to run a migration, the chain halt bit must be set to `true` or use the `--force` cli flag"
+         );
+ 
+         // Assert that the local chain state version is not corrupted, see `v0.80.10` release notes.
+         let latest_version = storage.latest_version();
+         let block_height = storage.latest_snapshot().get_block_height().await?;
+         ensure!(
+             latest_version == block_height || force,
+             "local chain state version is corrupted: {} != {}",
+             latest_version,
+             block_height
+         );
+ 
+         tracing::info!("started migration");
+ 
+         // If this is `ReadyToStart`, we need to reset the halt bit and return early.
+         if let Migration::ReadyToStart = self {
+             reset_halt_bit::migrate(storage, pd_home, genesis_start).await?;
+             return Ok(());
+         }
+ 
+         match self {
+             Migration::SimpleMigration => {
+                 simple::migrate(storage, pd_home.clone(), genesis_start).await?
+             }
+             Migration::Mainnet1 => {
+                 mainnet1::migrate(storage, pd_home.clone(), genesis_start).await?;
+             }
+             Migration::Mainnet2 => {
+                 mainnet2::migrate(storage, pd_home.clone(), genesis_start).await?;
+             }
+             Migration::Mainnet3 => {
+                 mainnet3::migrate(storage, pd_home.clone(), genesis_start).await?;
+             }
+             Migration::Mainnet4 => {
+                 mainnet4::migrate(storage, pd_home.clone(), genesis_start).await?;
+             }
+             // We keep historical migrations around for now, this will help inform an abstracted
+             // design. Feel free to remove it if it's causing you trouble.
+             _ => unimplemented!("the specified migration is unimplemented"),
+         }
+ 
+         if let Some(comet_home) = comet_home {
+             let genesis_path = pd_home.join("genesis.json");
+             migrate_comet_data(comet_home, genesis_path).await?;
+         }
+ 
+         Ok(())
+     }
+ }
+ 
+ /// Compress single directory to gzipped tar archive. Accepts an Option for naming
+ /// the subdir within the tar archive, which defaults to ".", meaning no nesting.
+ pub fn archive_directory(
+     src_directory: PathBuf,
+     archive_filepath: PathBuf,
+     subdir_within_archive: Option<String>,
+ ) -> anyhow::Result<()> {
+     // Don't clobber an existing target archive.
+     if archive_filepath.exists() {
+         tracing::error!(
+             "export archive filepath already exists: {}",
+             archive_filepath.display()
+         );
+         anyhow::bail!("refusing to overwrite existing archive");
+     }
+ 
+     tracing::info!(
+         "creating archive {} -> {}",
+         src_directory.display(),
+         archive_filepath.display()
+     );
+     let tarball_file = File::create(&archive_filepath)
+         .context("failed to create file for archive: check parent directory and permissions")?;
+     let enc = GzEncoder::new(tarball_file, Compression::default());
+     let mut tarball = tar::Builder::new(enc);
+     let subdir_within_archive = subdir_within_archive.unwrap_or(String::from("."));
+     tarball
+         .append_dir_all(subdir_within_archive, src_directory.as_path())
+         .context("failed to package archive contents")?;
+     Ok(())
+ }
+ 
+ /// Read the last block timestamp from the pd state.
+ pub async fn last_block_timestamp(home: PathBuf) -> anyhow::Result<tendermint::Time> {
+     let rocksdb = home.join("rocksdb");
+     let storage = Storage::load(rocksdb, SUBSTORE_PREFIXES.to_vec())
+         .await
+         .context("error loading store for timestamp")?;
+     let state = storage.latest_snapshot();
+     let last_block_time = state
+         .get_current_block_timestamp()
+         .await
+         .context("error reading latest block timestamp")?;
+     storage.release().await;
+     Ok(last_block_time)
+ }
+ 
+ #[instrument(skip_all)]
+ pub async fn migrate_comet_data(
+     comet_home: PathBuf,
+     new_genesis_file: PathBuf,
+ ) -> anyhow::Result<()> {
+     tracing::info!(?comet_home, ?new_genesis_file, "migrating comet data");
+ 
+     // Read the contents of new_genesis_file into a serde_json::Value and pull out .initial_height
+     let genesis_contents =
+         std::fs::read_to_string(new_genesis_file).context("error reading new genesis file")?;
+     let genesis_json: serde_json::Value =
+         serde_json::from_str(&genesis_contents).context("error parsing new genesis file")?;
+     tracing::info!(?genesis_json, "parsed genesis file");
+     let initial_height = genesis_json["initial_height"]
+         .as_str()
+         .context("error reading initial_height from genesis file")?
+         .parse::<u64>()?;
+ 
+     // Write the genesis data to HOME/config/genesis.json
+     let genesis_file = comet_home.join("config").join("genesis.json");
+     tracing::info!(?genesis_file, "writing genesis file to comet config");
+     std::fs::write(genesis_file, genesis_contents)
+         .context("error writing genesis file to comet config")?;
+ 
+     // Adjust the high-water mark in priv_validator_state.json but don't decrease it
+     adjust_priv_validator_state(&comet_home, initial_height)?;
+ 
+     // Delete other cometbft data.
+     clear_comet_data(&comet_home)?;
+ 
+     Ok(())
+ }
+ 
+ #[instrument(skip_all)]
+ fn adjust_priv_validator_state(comet_home: &Path, initial_height: u64) -> anyhow::Result<()> {
+     let priv_validator_state = comet_home.join("data").join("priv_validator_state.json");
+     let current_state: serde_json::Value =
+         serde_json::from_str(&std::fs::read_to_string(&priv_validator_state)?)?;
+ 
+     let current_height = current_state["height"]
+         .as_str()
+         .context("error reading height from priv_validator_state.json")?
+         .parse::<u64>()?;
+     if current_height < initial_height {
+         tracing::info!(
+             "increasing height in priv_validator_state from {} to {}",
+             current_height,
+             initial_height
+         );
+         let new_state = serde_json::json!({
+             "height": initial_height.to_string(), // Important to use to_string here as if protojson
+             "round": 0,
+             "step": 0,
+         });
+         tracing::info!(?new_state, "updated priv_validator_state.json");
+         std::fs::write(
+             &priv_validator_state,
+             &serde_json::to_string_pretty(&new_state)?,
+         )?;
+     } else {
+-        anyhow::bail!(
+-            "priv_validator_state height {} is already greater than or equal to initial_height {}",
++        // restart-fork: a validator that already signed at `initial_height` on the halted chain
++        // MUST keep its last-signed height/round/step, otherwise it could double-sign that height
++        // on the restarted chain and be tombstoned. Leave the file untouched.
++        tracing::warn!(
++            "priv_validator_state height {} is already >= initial_height {}; leaving priv_validator_state.json untouched (prevents double-signing)",
+             current_height,
+             initial_height
+         );
+     }
+ 
+     Ok(())
+ }
+ 
+ #[instrument(skip_all)]
+ fn clear_comet_data(comet_home: &Path) -> anyhow::Result<()> {
+     let data_dir = comet_home.join("data");
+ 
+     /*
+     N.B. We want to preserve the `tx_index.db` directory.
+     Doing so will allow CometBFT to reference historical transactions behind the upgrade boundary.
+      */
+     for subdir in &["evidence.db", "state.db", "blockstore.db", "cs.wal"] {
+         let path = data_dir.join(subdir);
+         if path.exists() {
+             tracing::info!(?path, "removing file");
+             std::fs::remove_dir_all(path)?;
+         }
+     }
+ 
+     Ok(())
+ }
+diff --git a/crates/bin/pd/src/migrate/restart_fork.rs b/crates/bin/pd/src/migrate/restart_fork.rs
+new file mode 100644
+index 000000000..09d45ac2b
+--- /dev/null
++++ b/crates/bin/pd/src/migrate/restart_fork.rs
+@@ -0,0 +1,399 @@
++//! Coordinated-restart ("hard-fork") migration for a chain halted by liveness loss.
++//!
++//! 1. Removes the given validators from the active set (Active -> Jailed, or Disabled) so
++//!    that the remaining validators hold all of the voting power, and rewrites the consensus
++//!    key record so `InitChain` never reports a zero-power validator to CometBFT.
++//! 2. Executes an **empty application block** at `halt_height + 1` through the same
++//!    `App::begin_block` / `end_block` / `commit` path `pd` uses for every block, with a
++//!    fixed, deterministic header.
++//! 3. Writes a checkpoint genesis with `initial_height = halt_height + 2`.
++//!
++//! Step 2 exists because every validator that was online at the halt already signed votes
++//! for `halt_height + 1` (rounds 0..2) on the halted chain. CometBFT's double-sign protection
++//! will not let them sign those rounds again, and a round only advances on two-thirds of
++//! votes, so a chain restarted at `halt_height + 1` can never produce a block (verified on a
++//! copy of the mainnet halt state). Restarting at `halt_height + 2` sidesteps the signed
++//! rounds entirely, and no vote from the halted chain can ever become evidence on the
++//! restarted chain, because the halted chain never had that height. Executing the empty
++//! block inside the migration keeps the application state and the compact block stream
++//! contiguous, so wallets keep syncing. There is simply no CometBFT block `halt_height + 1`.
++//!
++//! The app version is NOT bumped. Unlike `Migration::migrate`, this does not require the
++//! chain halt bit to be set (a liveness halt never sets it), but it keeps the
++//! state-version == block-height corruption check.
++use std::path::PathBuf;
++
++use anyhow::{ensure, Context, Result};
++use cnidarium::{StateDelta, Storage};
++use futures::StreamExt as _;
++use jmt::RootHash;
++use penumbra_sdk_app::app::App;
++use penumbra_sdk_app::app::{StateReadExt as _, StateWriteExt as _};
++use penumbra_sdk_app::SUBSTORE_PREFIXES;
++use penumbra_sdk_governance::{StateReadExt as _, StateWriteExt as _};
++use penumbra_sdk_proto::StateWriteProto as _;
++use penumbra_sdk_sct::component::clock::{EpochManager as _, EpochRead as _};
++use penumbra_sdk_stake::component::stake::ConsensusIndexRead as _;
++use penumbra_sdk_stake::component::validator_handler::{
++    ValidatorDataRead as _, ValidatorManager as _,
++};
++use penumbra_sdk_stake::component::StateWriteExt as _;
++use penumbra_sdk_stake::{state_key, validator, CurrentConsensusKeys};
++use tendermint::abci::request;
++use tendermint::abci::types::{BlockSignatureInfo, CommitInfo, Validator, VoteInfo};
++use tendermint::block::BlockIdFlag;
++use tendermint::PublicKey;
++
++use crate::network::generate::NetworkConfig;
++
++/// Drill-only knobs. Never used on mainnet; they change the resulting state.
++#[derive(Debug, Default, Clone)]
++pub struct UnsafeTestOptions {
++    /// Replace the chain id (so a drill can never talk to mainnet peers).
++    pub chain_id: Option<String>,
++    /// Replace consensus keys `(old, new)` of kept validators with throwaway keys.
++    pub rekey: Vec<(PublicKey, PublicKey)>,
++}
++
++struct Kept {
++    consensus_key: PublicKey,
++    power: u64,
++}
++
++/// sha256 of the empty string: the hash CometBFT uses for empty commits,
++/// empty transaction lists and empty evidence lists.
++fn empty_hash() -> tendermint::Hash {
++    tendermint::Hash::Sha256(
++        hex::decode("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
++            .expect("valid hex")
++            .try_into()
++            .expect("32 bytes"),
++    )
++}
++
++/// The deterministic header of the empty block executed by the migration.
++fn synthetic_begin_block(
++    chain_id: &str,
++    height: u64,
++    time: tendermint::Time,
++    app_hash: RootHash,
++    kept: &[Kept],
++) -> Result<request::BeginBlock> {
++    let infos = kept
++        .iter()
++        .map(|v| {
++            Ok(tendermint::validator::Info::new(
++                v.consensus_key,
++                tendermint::vote::Power::try_from(v.power).context("voting power")?,
++            ))
++        })
++        .collect::<Result<Vec<_>>>()?;
++    let validators_hash = tendermint::validator::Set::without_proposer(infos).hash();
++
++    let header = tendermint::block::Header {
++        version: tendermint::block::header::Version {
++            block: 11,
++            app: penumbra_sdk_app::APP_VERSION,
++        },
++        chain_id: chain_id.parse().context("chain id")?,
++        height: height.try_into().context("height")?,
++        time,
++        last_block_id: None,
++        last_commit_hash: Some(empty_hash()),
++        data_hash: Some(empty_hash()),
++        validators_hash,
++        next_validators_hash: validators_hash,
++        consensus_hash: empty_hash(),
++        app_hash: tendermint::AppHash::try_from(app_hash.0.to_vec()).context("app hash")?,
++        last_results_hash: Some(empty_hash()),
++        evidence_hash: Some(empty_hash()),
++        // Nobody proposed this block.
++        proposer_address: tendermint::account::Id::new([0u8; 20]),
++    };
++
++    // Count every kept validator as having signed the previous block, so the
++    // empty block neither rewards nor penalises anyone's uptime.
++    let votes = kept
++        .iter()
++        .map(|v| {
++            Ok(VoteInfo {
++                validator: Validator {
++                    address: tendermint::account::Id::from(v.consensus_key)
++                        .as_bytes()
++                        .try_into()
++                        .expect("20-byte address"),
++                    power: tendermint::vote::Power::try_from(v.power).context("voting power")?,
++                },
++                sig_info: BlockSignatureInfo::Flag(BlockIdFlag::Commit),
++            })
++        })
++        .collect::<Result<Vec<_>>>()?;
++
++    Ok(request::BeginBlock {
++        hash: tendermint::Hash::None,
++        header,
++        last_commit_info: CommitInfo {
++            round: 0u8.into(),
++            votes,
++        },
++        byzantine_validators: vec![],
++    })
++}
++
++pub async fn run(
++    pd_home: PathBuf,
++    comet_home: Option<PathBuf>,
++    remove: Vec<[u8; 20]>,
++    new_state: validator::State,
++    unsafe_test: UnsafeTestOptions,
++) -> Result<()> {
++    ensure!(
++        matches!(
++            new_state,
++            validator::State::Jailed | validator::State::Disabled
++        ),
++        "removed validators must become Jailed or Disabled"
++    );
++    ensure!(!remove.is_empty(), "no validators to remove");
++
++    let storage = Storage::load(pd_home.join("rocksdb"), SUBSTORE_PREFIXES.to_vec()).await?;
++    let latest_version = storage.latest_version();
++    let initial_state = storage.latest_snapshot();
++    let pre_height = initial_state.get_block_height().await?;
++    ensure!(
++        latest_version == pre_height,
++        "local chain state version is corrupted: {} != {}",
++        latest_version,
++        pre_height
++    );
++    let halted = initial_state.is_chain_halted().await;
++    let pre_root: RootHash = initial_state.root_hash().await?.into();
++    let last_block_time = initial_state
++        .get_current_block_timestamp()
++        .await
++        .context("reading last block timestamp")?;
++    // The empty block carries the halted chain's last timestamp; the restarted
++    // chain's first block (= genesis time) comes one second later.
++    let synthetic_time = last_block_time;
++    let genesis_start =
++        (last_block_time + std::time::Duration::from_secs(1)).context("genesis time")?;
++    let synthetic_height = pre_height + 1;
++    let post_height = pre_height + 2;
++    tracing::info!(
++        ?pre_root,
++        pre_height,
++        synthetic_height,
++        post_height,
++        halted,
++        %last_block_time,
++        %genesis_start,
++        "restart-fork: pre-migration state"
++    );
++
++    let mut delta = StateDelta::new(initial_state);
++
++    if let Some(chain_id) = &unsafe_test.chain_id {
++        let old = delta.get_chain_id().await?;
++        tracing::warn!(%old, new = %chain_id, "DRILL: overriding chain id");
++        delta.put_chain_id(chain_id.clone());
++    }
++    let chain_id = delta.get_chain_id().await?;
++
++    // 1. Move every REMOVE validator out of Active. Must happen while the block height is
++    //    still the halt height: the (Active, Jailed/Disabled) transition reads it to
++    //    schedule unbonding.
++    for addr in &remove {
++        let def = delta
++            .get_validator_definition_by_cometbft_address(addr)
++            .await?
++            .with_context(|| {
++                format!(
++                    "no validator with cometbft address {}",
++                    hex::encode_upper(addr)
++                )
++            })?;
++        let id = def.identity_key;
++        let (old, new) = delta.set_validator_state(&id, new_state.clone()).await?;
++        ensure!(
++            old == validator::State::Active,
++            "validator {} ({}) was {:?}, expected Active",
++            id,
++            hex::encode_upper(addr),
++            old
++        );
++        tracing::info!(
++            %id,
++            cometbft_address = hex::encode_upper(addr),
++            name = def.name,
++            ?old,
++            ?new,
++            "restart-fork: removed validator from active set"
++        );
++    }
++
++    // 1b. Drill only: swap consensus keys of kept validators for throwaway keys.
++    for (old, new) in &unsafe_test.rekey {
++        let id = delta
++            .lookup_identity_key_by_consensus_key(old)
++            .await
++            .with_context(|| format!("DRILL: no validator with consensus key {old:?}"))?;
++        let mut def = delta
++            .get_validator_definition(&id)
++            .await?
++            .with_context(|| format!("no definition for {id}"))?;
++        tracing::warn!(%id, name = def.name, "DRILL: replacing consensus key");
++        def.consensus_key = *new;
++        delta.register_consensus_key(&id, new);
++        delta.put(state_key::validators::definitions::by_id(&id), def);
++    }
++
++    // 2. Rewrite CurrentConsensusKeys to exactly the validators still Active. Otherwise
++    //    build_cometbft_validator_updates() emits power-0 entries for the removed keys at
++    //    InitChain and CometBFT's NewValidatorSet panics on them.
++    let mut kept = Vec::new();
++    let mut total_power: u128 = 0;
++    let mut ids = delta.consensus_set_stream()?;
++    while let Some(id) = ids.next().await {
++        let id = id?;
++        let state = delta
++            .get_validator_state(&id)
++            .await?
++            .with_context(|| format!("validator {id} has no state"))?;
++        if state != validator::State::Active {
++            continue;
++        }
++        let def = delta
++            .get_validator_definition(&id)
++            .await?
++            .with_context(|| format!("active validator {id} has no definition"))?;
++        let consensus_key = def.consensus_key;
++        let power = delta
++            .get_validator_power(&id)
++            .await?
++            .with_context(|| format!("active validator {id} has no power"))?;
++        ensure!(power.value() > 0, "active validator {id} has zero power");
++        total_power += power.value();
++        let comet_addr = tendermint::account::Id::from(consensus_key);
++        tracing::info!(
++            %id,
++            name = def.name,
++            cometbft_address = %comet_addr,
++            power = power.value(),
++            "restart-fork: keeping active validator"
++        );
++        kept.push(Kept {
++            consensus_key,
++            power: u64::try_from(power.value()).context("voting power fits in u64")?,
++        });
++    }
++    ensure!(!kept.is_empty(), "no active validators would remain");
++    let n_keep = kept.len();
++    delta.put(
++        state_key::consensus_update::consensus_keys().to_owned(),
++        CurrentConsensusKeys {
++            consensus_keys: kept.iter().map(|k| k.consensus_key).collect(),
++        },
++    );
++    let root_after_changes = storage.commit_in_place(delta).await?;
++    tracing::info!(
++        ?root_after_changes,
++        n_keep,
++        total_power,
++        "restart-fork: committed validator changes at height {pre_height}"
++    );
++
++    // 3. The empty block at halt_height + 1.
++    let begin_block = synthetic_begin_block(
++        &chain_id,
++        synthetic_height,
++        synthetic_time,
++        root_after_changes,
++        &kept,
++    )?;
++    tracing::info!(
++        height = synthetic_height,
++        time = %synthetic_time,
++        validators_hash = %begin_block.header.validators_hash,
++        "restart-fork: executing the empty application block"
++    );
++    let mut app = App::new(storage.latest_snapshot());
++    let begin_events = app.begin_block(&begin_block).await;
++    let end_events = app
++        .end_block(&request::EndBlock {
++            height: synthetic_height as i64,
++        })
++        .await;
++    let root_after_block = app.commit(storage.clone()).await;
++    ensure!(
++        storage.latest_version() == synthetic_height,
++        "state version {} after the empty block, expected {synthetic_height}",
++        storage.latest_version()
++    );
++    tracing::info!(
++        ?root_after_block,
++        begin_block_events = begin_events.len(),
++        end_block_events = end_events.len(),
++        "restart-fork: empty block {synthetic_height} committed"
++    );
++
++    // 4. Same tail as mainnet4.rs, minus migrate_app_version (APP_VERSION stays as-is).
++    //    put_block_height(0) is what makes CometBFT issue InitChain on start.
++    let mut delta = StateDelta::new(storage.latest_snapshot());
++    let committed_height = delta.get_block_height().await?;
++    ensure!(
++        committed_height == synthetic_height,
++        "block height {committed_height} after the empty block, expected {synthetic_height}"
++    );
++    delta.ready_to_start();
++    delta.put_block_height(0u64);
++    let post_root = storage.commit_in_place(delta).await?;
++    ensure!(
++        storage.latest_version() == synthetic_height,
++        "state version {} after the final commit, expected {synthetic_height}",
++        storage.latest_version()
++    );
++    storage.release().await;
++    tracing::info!(?post_root, n_keep, "restart-fork: post-migration root hash");
++
++    // 5. Checkpoint genesis, identical in shape to mainnet4.rs.
++    let app_state = penumbra_sdk_app::genesis::Content {
++        chain_id,
++        ..Default::default()
++    };
++    let mut genesis = NetworkConfig::make_genesis(app_state).expect("can make genesis");
++    genesis.app_hash = post_root
++        .0
++        .to_vec()
++        .try_into()
++        .expect("infallible conversion");
++    genesis.initial_height = post_height as i64;
++    genesis.genesis_time = genesis_start;
++    let genesis = NetworkConfig::make_checkpoint(genesis, Some(post_root.0.to_vec()));
++    let genesis_json = serde_json::to_string(&genesis).expect("can serialize genesis");
++    tracing::info!("genesis: {}", genesis_json);
++    let genesis_path = pd_home.join("genesis.json");
++    std::fs::write(&genesis_path, genesis_json).context("writing genesis.json")?;
++
++    let validator_state_path = pd_home.join("priv_validator_state.json");
++    std::fs::write(
++        validator_state_path,
++        crate::network::generate::NetworkValidator::initial_state(),
++    )
++    .context("writing priv_validator_state.json")?;
++
++    if let Some(comet_home) = comet_home {
++        crate::migrate::migrate_comet_data(comet_home, genesis_path).await?;
++    }
++
++    tracing::info!(
++        pre_height,
++        synthetic_height,
++        post_height,
++        ?pre_root,
++        ?post_root,
++        removed = remove.len(),
++        kept = n_keep,
++        "restart-fork: successful migration!"
++    );
++    Ok(())
++}
+diff --git a/crates/bin/pmonitor/Cargo.toml b/crates/bin/pmonitor/Cargo.toml
+index afb6a457f..da01dad79 100644
+--- a/crates/bin/pmonitor/Cargo.toml
++++ b/crates/bin/pmonitor/Cargo.toml
+@@ -1,54 +1,54 @@
+ [package]
+ name = "pmonitor"
+ description = "Monitoring tool for your Penumbra full-viewing key"
+ version = { workspace = true }
+ authors = { workspace = true }
+ edition = { workspace = true }
+ repository = { workspace = true }
+ homepage = { workspace = true }
+ license = { workspace = true }
+ publish = false
+ 
+ [package.metadata.dist]
+ dist = true
+ 
+ [features]
+ network-integration = []
+ integration-testnet = []
+ 
+ [dependencies]
+ anyhow = {workspace = true}
+ camino = {workspace = true}
+ clap = {workspace = true, features = ["derive", "env"]}
+ colored = "2.1.0"
+ directories = {workspace = true}
+ futures = {workspace = true}
+ indicatif = {workspace = true}
+-pcli = {version = "2.0.6", path = "../pcli", default-features = true}
++pcli = {version = "2.0.9", path = "../pcli", default-features = true}
+ penumbra-sdk-app = {workspace = true}
+ penumbra-sdk-asset = {workspace = true, default-features = false}
+ penumbra-sdk-compact-block = {workspace = true, default-features = false}
+ penumbra-sdk-keys = {workspace = true, default-features = false}
+ penumbra-sdk-num = {workspace = true, default-features = false}
+ penumbra-sdk-proto = {workspace = true}
+ penumbra-sdk-shielded-pool = {workspace = true, default-features = false}
+ penumbra-sdk-stake = {workspace = true, default-features = false}
+ penumbra-sdk-tct = {workspace = true, default-features = false}
+ penumbra-sdk-view = {workspace = true}
+ regex = {workspace = true}
+ rustls = {workspace = true}
+ serde = {workspace = true, features = ["derive"]}
+ serde_json = {workspace = true}
+ tokio = {workspace = true, features = ["full"]}
+ toml = {workspace = true}
+ tonic = {workspace = true, features = ["tls-webpki-roots", "tls"]}
+ tracing = {workspace = true}
+ tracing-subscriber = { workspace = true, features = ["env-filter", "ansi"] }
+ url = {workspace = true, features = ["serde"]}
+ uuid = { version = "1.3", features = ["v4", "serde"] }
+ 
+ [dev-dependencies]
+ assert_cmd = {workspace = true}
+ once_cell = {workspace = true}
+ process-compose-openapi-client = "1.40.1"
+ tempfile = {workspace = true}
+diff --git a/crates/core/component/stake/src/component/validator_handler.rs b/crates/core/component/stake/src/component/validator_handler.rs
+index f5e5081a5..aa0152868 100644
+--- a/crates/core/component/stake/src/component/validator_handler.rs
++++ b/crates/core/component/stake/src/component/validator_handler.rs
+@@ -1,10 +1,10 @@
+-pub(crate) mod validator_manager;
+-pub(crate) use validator_manager::ValidatorManager;
++pub mod validator_manager;
++pub use validator_manager::ValidatorManager;
+ 
+ pub mod validator_store;
+ pub use validator_store::ValidatorDataRead;
+ pub(crate) use validator_store::ValidatorDataWrite;
+ pub(crate) use validator_store::ValidatorPoolTracker;
+ 
+ pub mod uptime_tracker;
+ pub use uptime_tracker::ValidatorUptimeTracker;
+diff --git a/crates/custody/Cargo.toml b/crates/custody/Cargo.toml
+index d87c33d64..ccce35af2 100644
+--- a/crates/custody/Cargo.toml
++++ b/crates/custody/Cargo.toml
+@@ -1,42 +1,42 @@
+ [package]
+ name = "penumbra-sdk-custody"
+ authors = {workspace = true}
+ repository = {workspace = true}
+ description = "Modular custody for Penumbra"
+ version = {workspace = true}
+ license = {workspace = true}
+ edition = {workspace = true}
+ 
+ [dependencies]
+ anyhow = {workspace = true}
+ argon2 = "0.5"
+ ark-ff = {workspace = true}
+ ark-serialize = {workspace = true}
+ base64 = {workspace = true}
+ blake2b_simd = {workspace = true}
+ bytes = {workspace = true, features = ["serde"]}
+ chacha20poly1305 = {workspace = true}
+ decaf377 = {workspace = true}
+-decaf377-frost = { version = "2.0.6", path = "../crypto/decaf377-frost" }
++decaf377-frost = { version = "2.0.9", path = "../crypto/decaf377-frost" }
+ decaf377-ka = {workspace = true}
+ decaf377-rdsa = {workspace = true}
+ ed25519-consensus = {workspace = true}
+ futures = {workspace = true}
+ hex = {workspace = true}
+ penumbra-sdk-governance = {workspace = true, default-features = false}
+ penumbra-sdk-keys = {workspace = true, default-features = true}
+ penumbra-sdk-proto = {workspace = true, features = ["rpc"], default-features = true}
+ penumbra-sdk-stake = {workspace = true, default-features = false}
+ penumbra-sdk-transaction = {workspace = true, default-features = true}
+ penumbra-sdk-txhash = {workspace = true, default-features = true}
+ prost = {workspace = true}
+ rand_core = {workspace = true}
+ serde = {workspace = true, features = ["derive"]}
+ serde_json = {workspace = true}
+ serde_with = {workspace = true, features = ["hex"]}
+ tokio = {workspace = true, features = ["full"]}
+ tonic = {workspace = true}
+ tracing = {workspace = true}
+ 
+ [dev-dependencies]
+ toml = {workspace = true}

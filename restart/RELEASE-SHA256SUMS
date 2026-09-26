@@ -1,0 +1,3 @@
+c099ccb02a2136d5071fb22b1511eeec1588ad09676e0a0532d072f28b433ed4  candidate-genesis-penumbra-1-restart-12598602-disable.json
+# post_root (app_hash / genesis checkpoint) = 1db72ab20c0babdb8696f361d5b08d790abd8032ac64d762b138ddc80f0f99f7 ; --disable, 2 removed (iqlusion, polkachu), KEEP=14, initial_height=12598602
+# binary sha256: see SHA256SUMS attached to the v2.0.9 release
