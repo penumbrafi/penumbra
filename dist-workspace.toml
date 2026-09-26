@@ -14,7 +14,9 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-da
 # The installers to generate for each app
 installers = ["shell"]
 # Which actions to run on pull requests
-pr-run-mode = "skip"
+# TEMPORARY: "upload" builds every artifact on this PR without publishing.
+# Set back to "skip" before merging.
+pr-run-mode = "upload"
 # Skip checking whether the specified configuration files are up to date
 allow-dirty = ["ci"]
 # Whether to install an updater program
@@ -24,8 +26,10 @@ install-path = "CARGO_HOME"
 # Build only the required packages, and individually
 precise-builds = true
 
+# GitHub-hosted runners that are free for public repositories. BuildJet is
+# no longer used by penumbrafi, and the macos-*-large runners are a paid tier.
 [dist.github-custom-runners]
-aarch64-apple-darwin = "macos-15-large"
-x86_64-apple-darwin = "macos-15-large"
+aarch64-apple-darwin = "macos-15"
+x86_64-apple-darwin = "macos-15-intel"
 x86_64-unknown-linux-gnu = "ubuntu-22.04"
-aarch64-unknown-linux-gnu = "buildjet-32vcpu-ubuntu-2204-arm"
+aarch64-unknown-linux-gnu = "ubuntu-22.04-arm"
