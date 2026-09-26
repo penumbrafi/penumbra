@@ -48,6 +48,9 @@ pub struct Worker {
     sync_height_tx: watch::Sender<u64>,
     /// Tonic channel used to create GRPC clients.
     channel: Channel,
+    /// Lock that pauses block processing while a transaction is being built.
+    /// The sync worker holds the read side; the tx builder holds the write side.
+    tx_build_lock: Arc<RwLock<()>>,
 }
 
 impl Worker {
@@ -61,6 +64,7 @@ impl Worker {
     pub async fn new(
         storage: Storage,
         channel: Channel,
+        tx_build_lock: Arc<RwLock<()>>,
     ) -> Result<
         (
             Self,
@@ -95,6 +99,7 @@ impl Worker {
                 error_slot: error_slot.clone(),
                 sync_height_tx,
                 channel,
+                tx_build_lock,
             },
             sct,
             error_slot,
@@ -228,14 +233,40 @@ impl Worker {
 
             let height = block.height;
             if height != expected_height {
-                tracing::warn!("out of order block detected");
-                continue;
+                anyhow::bail!(
+                    "expected compact block at height {} but got height {} — \
+                     the compact block stream delivered blocks out of order. \
+                     The sync loop will retry from the last committed height, \
+                     rebuilding the in-memory SCT from storage.",
+                    expected_height,
+                    height,
+                );
             }
             expected_height += 1;
+
+            // Wait for any in-progress transaction build to finish before
+            // processing this block. The tx builder holds the write side of
+            // tx_build_lock during plan+witness+build, preventing us from
+            // forgetting notes that the planner just selected.
+            let _build_guard = self.tx_build_lock.read().await;
 
             // Lock the SCT only while processing this block.
             let mut sct_guard = self.sct.write().await;
 
+            // Snapshot the SCT before any in-memory mutation so we can roll
+            // back if storage fails. Upstream mutates `*sct_guard` via
+            // `end_block()` / `scan_block()` BEFORE calling `record_*_block`.
+            // If the storage call bails (e.g. "Wrong block height N for
+            // latest sync height M" from a stale `SELECT height FROM
+            // sync_height` after a successful commit), the in-memory
+            // mutation persists while storage lags. The next sync cycle
+            // reprocesses the same heights and applies the mutation a
+            // SECOND time, corrupting the SCT permanently — this is what
+            // produces the cascading "SCT divergence detected at height N"
+            // errors. tct::Tree is copy-on-write; the clone shares structure.
+            let pre_sct = sct_guard.clone();
+
+            let block_result: anyhow::Result<()> = async {
             if let Some(root) = block.epoch_root {
                 // We now know the root for this epoch.
                 self.storage
@@ -435,6 +466,16 @@ impl Worker {
             }
             #[cfg(feature = "sct-divergence-check")]
             sct_divergence_check(self.channel.clone(), height, sct_guard.root()).await?;
+            Ok(())
+            }.await;
+
+            if let Err(e) = block_result {
+                // Storage either rolled back its own dbtx or never wrote.
+                // Restore the in-memory SCT to match so the next sync cycle
+                // reads a consistent (SCT, sync_height) pair.
+                *sct_guard = pre_sct;
+                return Err(e);
+            }
 
             // Release the SCT RwLock
             drop(sct_guard);
