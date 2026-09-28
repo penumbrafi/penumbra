@@ -37,9 +37,16 @@ impl LiquidityPositionsCmd {
                     .map(Position::try_from)?
             });
 
-        let asset_cache = app.view().assets().await?;
+        let mut asset_cache = app.view().assets().await?;
 
         let positions = positions_stream.try_collect::<Vec<_>>().await?;
+
+        utils::add_chain_metadata(
+            app.pd_channel().await?,
+            &mut asset_cache,
+            utils::position_asset_ids(&positions),
+        )
+        .await?;
 
         println!("{}", utils::render_positions(&asset_cache, &positions));
 

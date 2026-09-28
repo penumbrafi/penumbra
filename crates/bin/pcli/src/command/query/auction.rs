@@ -1,4 +1,4 @@
-use crate::command::utils::render_positions;
+use crate::command::utils::{self, render_positions};
 use crate::App;
 use clap::Subcommand;
 use comfy_table::{presets, Table};
@@ -64,7 +64,18 @@ impl AuctionCmd {
                         None
                     };
 
-                    let asset_cache = app.view().assets().await?;
+                    let mut asset_cache = app.view().assets().await?;
+
+                    utils::add_chain_metadata(
+                        app.pd_channel().await?,
+                        &mut asset_cache,
+                        std::iter::once(dutch_auction.description.input.asset_id)
+                            .chain(std::iter::once(dutch_auction.description.output_id))
+                            .chain(position.iter().flat_map(|position| {
+                                [position.phi.pair.asset_1(), position.phi.pair.asset_2()]
+                            })),
+                    )
+                    .await?;
 
                     render_dutch_auction(&asset_cache, &dutch_auction, None, position).await?;
                 } else {

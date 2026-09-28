@@ -1,18 +1,71 @@
+use anyhow::Result;
 use comfy_table::{presets, Table};
-use penumbra_sdk_asset::asset;
+use penumbra_sdk_asset::asset::{self, Id, Metadata};
 use penumbra_sdk_dex::lp::position::Position;
+use penumbra_sdk_proto::core::component::shielded_pool::v1::{
+    query_service_client::QueryServiceClient as ShieldedPoolQueryServiceClient,
+    AssetMetadataByIdRequest,
+};
+use tonic::transport::Channel;
 
+/// The asset IDs referenced by the trading pairs of the given positions.
+pub(crate) fn position_asset_ids(positions: &[Position]) -> impl Iterator<Item = Id> + '_ {
+    positions
+        .iter()
+        .flat_map(|position| [position.phi.pair.asset_1(), position.phi.pair.asset_2()])
+}
+
+/// Adds on-chain denomination metadata to `asset_cache` for any of the given
+/// `asset_ids` that are missing from it.
+///
+/// The local view only records metadata for assets it has actually seen (e.g. in
+/// its own notes), so commands that list chain-wide data such as
+/// `pcli query dex lp-positions` encounter assets the cache knows nothing about.
+/// Querying the chain lets those render with their registered denomination
+/// instead of a raw `passet…` ID. Assets with no on-chain metadata record are
+/// left absent, so callers can fall back to [`asset::Metadata::from_id`].
+pub(crate) async fn add_chain_metadata(
+    channel: Channel,
+    asset_cache: &mut asset::Cache,
+    asset_ids: impl IntoIterator<Item = Id>,
+) -> Result<()> {
+    let mut client = ShieldedPoolQueryServiceClient::new(channel);
+    let mut queried = Vec::new();
+    for asset_id in asset_ids {
+        if queried.contains(&asset_id) || asset_cache.get(&asset_id).is_some() {
+            continue;
+        }
+        queried.push(asset_id);
+
+        if let Some(denom_metadata) = client
+            .asset_metadata_by_id(AssetMetadataByIdRequest {
+                asset_id: Some(asset_id.into()),
+            })
+            .await?
+            .into_inner()
+            .denom_metadata
+        {
+            asset_cache.extend(std::iter::once(Metadata::try_from(denom_metadata)?));
+        }
+    }
+
+    Ok(())
+}
+
+/// Renders a table of liquidity positions.
+///
+/// Assets missing from `asset_cache` (e.g. because the registry is out of date)
+/// are rendered by their raw bech32 `passet…` ID rather than as "Unknown asset".
+/// Callers that can reach a node should first enrich the cache with
+/// [`add_chain_metadata`], so assets the chain knows about render with their
+/// registered denomination.
 pub(crate) fn render_positions(asset_cache: &asset::Cache, positions: &[Position]) -> String {
-    // Assets whose metadata is missing from the cache (e.g. because the registry
-    // is out of date) would otherwise render as "Unknown asset". Fill in
-    // base-unit metadata keyed by their bech32 `passet…` IDs so the sell price
-    // and reserves still render.
+    // Fill in base-unit metadata keyed by the raw `passet…` IDs for any asset the
+    // cache doesn't know about, so the sell price and reserves still render.
     let mut enriched_cache = asset_cache.clone();
-    for position in positions {
-        for asset_id in [position.phi.pair.asset_1(), position.phi.pair.asset_2()] {
-            if enriched_cache.get(&asset_id).is_none() {
-                enriched_cache.extend(std::iter::once(asset::Metadata::from_id(asset_id)));
-            }
+    for asset_id in position_asset_ids(positions) {
+        if enriched_cache.get(&asset_id).is_none() {
+            enriched_cache.extend(std::iter::once(Metadata::from_id(asset_id)));
         }
     }
     let asset_cache = &enriched_cache;

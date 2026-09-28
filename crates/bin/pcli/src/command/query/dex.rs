@@ -403,9 +403,16 @@ impl DexCmd {
                     .get_all_liquidity_positions(client.clone(), *include_closed)
                     .await?;
 
-                let asset_cache = app.view().assets().await?;
+                let mut asset_cache = app.view().assets().await?;
 
                 let positions = positions_stream.try_collect::<Vec<_>>().await?;
+
+                utils::add_chain_metadata(
+                    app.pd_channel().await?,
+                    &mut asset_cache,
+                    utils::position_asset_ids(&positions),
+                )
+                .await?;
 
                 println!("{}", utils::render_positions(&asset_cache, &positions));
             }
@@ -419,7 +426,13 @@ impl DexCmd {
                     .await?
                     .try_collect::<Vec<_>>()
                     .await?;
-                let asset_cache = app.view().assets().await?;
+                let mut asset_cache = app.view().assets().await?;
+                utils::add_chain_metadata(
+                    app.pd_channel().await?,
+                    &mut asset_cache,
+                    utils::position_asset_ids(&positions),
+                )
+                .await?;
                 println!("{}", render_positions(&asset_cache, &positions));
             }
             DexCmd::Position { id, raw } => {
@@ -438,7 +451,13 @@ impl DexCmd {
                 if *raw {
                     println!("{}", serde_json::to_string_pretty(&position)?);
                 } else {
-                    let asset_cache = app.view().assets().await?;
+                    let mut asset_cache = app.view().assets().await?;
+                    utils::add_chain_metadata(
+                        app.pd_channel().await?,
+                        &mut asset_cache,
+                        utils::position_asset_ids(std::slice::from_ref(&position)),
+                    )
+                    .await?;
                     let mut table = Table::new();
                     table.load_preset(presets::NOTHING);
                     table.add_row(vec!["ID".to_string(), id.to_string()]);
