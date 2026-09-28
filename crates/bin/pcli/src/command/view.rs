@@ -78,7 +78,10 @@ impl ViewCmd {
 
         match self {
             ViewCmd::Auction(auction_cmd) => {
-                auction_cmd.exec(app.view(), &full_viewing_key).await?
+                let channel = app.pd_channel().await?;
+                auction_cmd
+                    .exec(app.view(), &full_viewing_key, channel)
+                    .await?
             }
             ViewCmd::WalletId(wallet_id_cmd) => {
                 wallet_id_cmd.exec(&full_viewing_key)?;
