@@ -290,6 +290,20 @@ impl Inner {
 }
 
 impl Metadata {
+    /// Constructs base-unit metadata for an asset identified by `id` but with no
+    /// known denomination record, using the asset's bech32 `passet…` string as
+    /// the base denomination.
+    ///
+    /// This lets assets whose metadata is missing from the registry (or chain
+    /// state) be rendered as `passet…` rather than treated as opaque. Amounts
+    /// are interpreted in base units (unit amount `1`) and there are no display
+    /// units.
+    pub fn from_id(id: Id) -> Self {
+        Self {
+            inner: Arc::new(Inner::from_id(id, id.to_string())),
+        }
+    }
+
     /// Return the [`Id`] associated with this denomination.
     pub fn id(&self) -> Id {
         self.inner.id
@@ -771,5 +785,19 @@ mod tests {
         // This should throw an error, because the asset ID and denom are now inconsistent.
 
         let _domain_type = super::Metadata::try_from(proto).unwrap();
+    }
+
+    #[test]
+    fn metadata_from_id_uses_bech32_base_denom() {
+        use std::str::FromStr;
+
+        let bech32 = "passet167kw6zx5gtysvk9mwuxn0vxdx84afd6t76jyg62szljntlq0lvrsygwl44";
+        let id = super::Id::from_str(bech32).expect("valid bech32 asset id");
+
+        let metadata = super::Metadata::from_id(id);
+
+        assert_eq!(metadata.id(), id);
+        assert_eq!(metadata.base_denom().denom, bech32);
+        assert_eq!(metadata.base_unit().unit_amount(), 1u64.into());
     }
 }
