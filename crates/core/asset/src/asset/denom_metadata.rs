@@ -262,6 +262,31 @@ impl Inner {
             coingecko_id: String::new(),
         }
     }
+
+    /// Constructs metadata for an asset with a known [`Id`] but no registered
+    /// denomination record, e.g. a raw `passet…` bech32 asset ID whose metadata
+    /// is not present in the (possibly out-of-date) [`REGISTRY`].
+    ///
+    /// The base denomination is set to the provided string and no display units
+    /// are added, so amounts are interpreted in base units (unit amount `1`).
+    pub fn from_id(id: Id, base_denom: String) -> Self {
+        Self {
+            id,
+            base_denom: base_denom.clone(),
+            description: String::new(),
+            images: Vec::new(),
+            badges: Vec::new(),
+            priority_score: 0,
+            units: vec![BareDenomUnit {
+                exponent: 0,
+                denom: base_denom,
+            }],
+            display_index: 0,
+            name: String::new(),
+            symbol: String::new(),
+            coingecko_id: String::new(),
+        }
+    }
 }
 
 impl Metadata {

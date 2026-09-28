@@ -534,6 +534,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_unit_accepts_raw_passet_asset_id() {
+        // A `passet…` bech32 asset ID whose metadata is not in the registry must
+        // still resolve to its underlying ID when parsed as a unit, so trading
+        // commands accept it even when the registry is out of date.
+        let bech32 = "passet167kw6zx5gtysvk9mwuxn0vxdx84afd6t76jyg62szljntlq0lvrsygwl44";
+        let id = Id::from_str(bech32).expect("valid bech32 asset id");
+        let unit = REGISTRY.parse_unit(bech32);
+        assert_eq!(unit.id(), id);
+        // No display units are known, so amounts are interpreted as base units.
+        assert_eq!(unit.unit_amount(), 1u64.into());
+    }
+
+    #[test]
     fn format_picks_best_unit() {
         let upenumbra_sdk_base_denom = crate::asset::Cache::with_known_assets()
             .get_unit("upenumbra")

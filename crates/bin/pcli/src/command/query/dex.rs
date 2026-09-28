@@ -85,8 +85,10 @@ pub enum DexCmd {
     /// Simulates execution of a trade against the current DEX state.
     Simulate {
         /// The input amount to swap, written as a typed value 1.87penumbra, 12cubes, etc.
+        /// A raw asset ID such as 100passet1... may also be used for assets not in the registry.
         input: String,
-        /// The denomination to swap the input into, e.g. `gm`
+        /// The denomination to swap the input into, e.g. `gm`, or a raw asset ID such as
+        /// passet1... for assets not in the registry.
         #[clap(long, display_order = 100)]
         into: String,
     },
