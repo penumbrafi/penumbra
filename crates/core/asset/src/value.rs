@@ -534,16 +534,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_unit_accepts_raw_passet_asset_id() {
-        // A `passet…` bech32 asset ID whose metadata is not in the registry must
-        // still resolve to its underlying ID when parsed as a unit, so trading
-        // commands accept it even when the registry is out of date.
+    fn parse_unit_hashes_raw_passet_asset_id() {
+        // The registry treats an unknown string as a base denom and hashes it, even
+        // when it is a valid `passet…` asset ID. Consensus parses ICS-20 packet denoms
+        // through the registry, so this must not change; clients that accept asset
+        // IDs as input decode them before reaching the registry.
         let bech32 = "passet167kw6zx5gtysvk9mwuxn0vxdx84afd6t76jyg62szljntlq0lvrsygwl44";
         let id = Id::from_str(bech32).expect("valid bech32 asset id");
         let unit = REGISTRY.parse_unit(bech32);
-        assert_eq!(unit.id(), id);
-        // No display units are known, so amounts are interpreted as base units.
-        assert_eq!(unit.unit_amount(), 1u64.into());
+        assert_ne!(unit.id(), id);
+        assert_eq!(unit.base().base_denom().denom, bech32);
     }
 
     #[test]

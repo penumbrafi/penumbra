@@ -391,7 +391,7 @@ impl DexCmd {
             }
             DexCmd::Simulate { input, into } => {
                 let input = input.parse::<Value>()?;
-                let into = asset::REGISTRY.parse_unit(into.as_str()).base();
+                let into = crate::command::utils::parse_unit(into).base();
 
                 let swap_execution = self.get_simulated_execution(app, input, into.id()).await?;
                 self.print_swap_execution(app, &swap_execution).await?;

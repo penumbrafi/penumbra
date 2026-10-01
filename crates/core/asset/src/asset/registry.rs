@@ -70,16 +70,8 @@ impl Registry {
         } else if self.display_set.matches(raw_denom).iter().next().is_some() {
             // 2. This denom isn't a base denom, it's a display denom
             None
-        } else if let Ok(id) = raw_denom.parse::<crate::asset::Id>() {
-            // 3. A raw asset ID (e.g. a `passet…` bech32 string) whose metadata
-            // is not present in the registry. Decode it directly instead of
-            // hashing the denom string, so it remains usable as a value input
-            // even when the registry is out of date.
-            Some(Metadata {
-                inner: Arc::new(Inner::from_id(id, raw_denom.to_string())),
-            })
         } else {
-            // 4. Fallthrough: create default base denom
+            // 3. Fallthrough: create default base denom
             Some(Metadata {
                 inner: Arc::new(Inner::new(raw_denom.to_string(), Vec::new())),
             })

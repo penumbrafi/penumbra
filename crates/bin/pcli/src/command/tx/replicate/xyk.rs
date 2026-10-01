@@ -18,6 +18,7 @@ use crate::{warning, App};
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct ConstantProduct {
+    #[clap(value_parser = crate::command::utils::parse_unit_pair)]
     pub pair: DirectedUnitPair,
     pub input: Value,
 

@@ -1,12 +1,37 @@
 use anyhow::Result;
 use comfy_table::{presets, Table};
-use penumbra_sdk_asset::asset::{self, Id, Metadata};
-use penumbra_sdk_dex::lp::position::Position;
+use penumbra_sdk_asset::asset::{self, Id, Metadata, Unit};
+use penumbra_sdk_dex::{lp::position::Position, DirectedUnitPair};
 use penumbra_sdk_proto::core::component::shielded_pool::v1::{
     query_service_client::QueryServiceClient as ShieldedPoolQueryServiceClient,
     AssetMetadataByIdRequest,
 };
 use tonic::transport::Channel;
+
+/// Parses a unit typed by the user, accepting a raw `passet…` asset ID.
+///
+/// [`asset::REGISTRY`] treats any unknown string as a base denom and hashes it, so a
+/// raw asset ID would otherwise name a different, nonexistent asset. An asset ID is
+/// resolved to the base unit of that asset instead, so amounts are in base units.
+///
+/// This is deliberately pcli-side: the registry's denom parsing is also used by
+/// consensus (e.g. ICS-20 packet denoms), whose behaviour must not change.
+pub(crate) fn parse_unit(input: &str) -> Unit {
+    match input.parse::<Id>() {
+        Ok(id) => Metadata::from_id(id).base_unit(),
+        Err(_) => asset::REGISTRY.parse_unit(input),
+    }
+}
+
+/// Parses a `UNIT1:UNIT2` pair typed by the user, accepting raw `passet…` asset IDs
+/// on either side (see [`parse_unit`]).
+pub(crate) fn parse_unit_pair(input: &str) -> Result<DirectedUnitPair> {
+    let parts: Vec<&str> = input.split(':').collect();
+    let [start, end] = parts[..] else {
+        anyhow::bail!("invalid market string {input}, expected UNIT1:UNIT2");
+    };
+    Ok(DirectedUnitPair::new(parse_unit(start), parse_unit(end)))
+}
 
 /// The asset IDs referenced by the trading pairs of the given positions.
 pub(crate) fn position_asset_ids(positions: &[Position]) -> impl Iterator<Item = Id> + '_ {
@@ -181,5 +206,39 @@ mod tests {
             rendered.contains(&asset_2.to_string()),
             "asset 2 should render by its bech32 ID:\n{rendered}"
         );
+    }
+}
+
+#[cfg(test)]
+mod parse_unit_tests {
+    use super::*;
+
+    const PASSET: &str = "passet167kw6zx5gtysvk9mwuxn0vxdx84afd6t76jyg62szljntlq0lvrsygwl44";
+
+    #[test]
+    fn parse_unit_decodes_raw_passet_asset_id() {
+        let id = PASSET.parse::<Id>().expect("valid bech32 asset id");
+        let unit = parse_unit(PASSET);
+        assert_eq!(unit.id(), id);
+        // No display units are known, so amounts are interpreted as base units.
+        assert_eq!(unit.unit_amount(), 1u64.into());
+    }
+
+    #[test]
+    fn parse_unit_falls_back_to_registry() {
+        assert_eq!(
+            parse_unit("penumbra").id(),
+            asset::REGISTRY.parse_unit("penumbra").id()
+        );
+    }
+
+    #[test]
+    fn parse_unit_pair_accepts_raw_passet_asset_id() {
+        let id = PASSET.parse::<Id>().expect("valid bech32 asset id");
+        let pair = parse_unit_pair(&format!("penumbra:{PASSET}")).expect("valid pair");
+        assert_eq!(pair.start.id(), *penumbra_sdk_asset::STAKING_TOKEN_ASSET_ID);
+        assert_eq!(pair.end.id(), id);
+        assert!(parse_unit_pair("penumbra").is_err());
+        assert!(parse_unit_pair("a:b:c").is_err());
     }
 }

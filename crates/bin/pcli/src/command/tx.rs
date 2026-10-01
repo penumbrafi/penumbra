@@ -498,7 +498,7 @@ impl TxCmd {
                 fee_tier,
             } => {
                 let input = input.parse::<Value>()?;
-                let into = asset::REGISTRY.parse_unit(into.as_str()).base();
+                let into = crate::command::utils::parse_unit(into).base();
                 let fee_tier: FeeTier = (*fee_tier).into();
 
                 let fvk = app.config.full_viewing_key.clone();

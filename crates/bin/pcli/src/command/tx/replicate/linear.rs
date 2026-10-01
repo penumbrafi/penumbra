@@ -17,6 +17,7 @@ use crate::App;
 #[derive(Debug, Clone, clap::Args)]
 pub struct Linear {
     /// The pair to provide liquidity for.
+    #[clap(value_parser = crate::command::utils::parse_unit_pair)]
     pub pair: DirectedUnitPair,
 
     /// The target amount of liquidity (in asset 2) to provide.
