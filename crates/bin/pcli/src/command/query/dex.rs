@@ -85,8 +85,10 @@ pub enum DexCmd {
     /// Simulates execution of a trade against the current DEX state.
     Simulate {
         /// The input amount to swap, written as a typed value 1.87penumbra, 12cubes, etc.
+        /// A raw asset ID such as 100passet1... may also be used for assets not in the registry.
         input: String,
-        /// The denomination to swap the input into, e.g. `gm`
+        /// The denomination to swap the input into, e.g. `gm`, or a raw asset ID such as
+        /// passet1... for assets not in the registry.
         #[clap(long, display_order = 100)]
         into: String,
     },
@@ -389,7 +391,7 @@ impl DexCmd {
             }
             DexCmd::Simulate { input, into } => {
                 let input = input.parse::<Value>()?;
-                let into = asset::REGISTRY.parse_unit(into.as_str()).base();
+                let into = crate::command::utils::parse_unit(into).base();
 
                 let swap_execution = self.get_simulated_execution(app, input, into.id()).await?;
                 self.print_swap_execution(app, &swap_execution).await?;
@@ -401,9 +403,16 @@ impl DexCmd {
                     .get_all_liquidity_positions(client.clone(), *include_closed)
                     .await?;
 
-                let asset_cache = app.view().assets().await?;
+                let mut asset_cache = app.view().assets().await?;
 
                 let positions = positions_stream.try_collect::<Vec<_>>().await?;
+
+                utils::add_chain_metadata(
+                    app.pd_channel().await?,
+                    &mut asset_cache,
+                    utils::position_asset_ids(&positions),
+                )
+                .await?;
 
                 println!("{}", utils::render_positions(&asset_cache, &positions));
             }
@@ -417,7 +426,13 @@ impl DexCmd {
                     .await?
                     .try_collect::<Vec<_>>()
                     .await?;
-                let asset_cache = app.view().assets().await?;
+                let mut asset_cache = app.view().assets().await?;
+                utils::add_chain_metadata(
+                    app.pd_channel().await?,
+                    &mut asset_cache,
+                    utils::position_asset_ids(&positions),
+                )
+                .await?;
                 println!("{}", render_positions(&asset_cache, &positions));
             }
             DexCmd::Position { id, raw } => {
@@ -436,7 +451,13 @@ impl DexCmd {
                 if *raw {
                     println!("{}", serde_json::to_string_pretty(&position)?);
                 } else {
-                    let asset_cache = app.view().assets().await?;
+                    let mut asset_cache = app.view().assets().await?;
+                    utils::add_chain_metadata(
+                        app.pd_channel().await?,
+                        &mut asset_cache,
+                        utils::position_asset_ids(std::slice::from_ref(&position)),
+                    )
+                    .await?;
                     let mut table = Table::new();
                     table.load_preset(presets::NOTHING);
                     table.add_row(vec!["ID".to_string(), id.to_string()]);

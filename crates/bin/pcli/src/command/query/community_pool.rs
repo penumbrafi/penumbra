@@ -26,16 +26,9 @@ impl CommunityPoolCmd {
     }
 
     pub async fn print_balance(&self, app: &mut App, asset: &Option<String>) -> Result<()> {
-        let asset_id = asset.as_ref().map(|asset| {
-            // Try to parse as an asset ID, then if it's not an asset ID, assume it's a unit name
-            if let Ok(asset_id) = asset.parse() {
-                asset_id
-            } else {
-                penumbra_sdk_asset::asset::REGISTRY
-                    .parse_unit(asset.as_str())
-                    .id()
-            }
-        });
+        let asset_id = asset
+            .as_ref()
+            .map(|asset| crate::command::utils::parse_unit(asset).id());
 
         let mut client = CommunityPoolQueryServiceClient::new(app.pd_channel().await?);
         let balances = client

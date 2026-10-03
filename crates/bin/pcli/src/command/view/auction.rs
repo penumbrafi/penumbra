@@ -6,6 +6,8 @@ use penumbra_sdk_proto::{core::component::auction::v1 as pb_auction, DomainType,
 use penumbra_sdk_view::ViewClient;
 
 use crate::command::query::auction::render_dutch_auction;
+use crate::command::utils;
+use tonic::transport::Channel;
 
 #[derive(Debug, clap::Args)]
 pub struct AuctionCmd {
@@ -26,6 +28,7 @@ impl AuctionCmd {
         &self,
         view_client: &mut impl ViewClient,
         _fvk: &FullViewingKey,
+        channel: Channel,
     ) -> Result<()> {
         let auctions: Vec<(
             penumbra_sdk_auction::auction::AuctionId,
@@ -42,7 +45,17 @@ impl AuctionCmd {
                 if pb_auction_state.type_url == pb_auction::DutchAuction::type_url() {
                     let dutch_auction = DutchAuction::decode(pb_auction_state.value)
                         .expect("no deserialization error");
-                    let asset_cache = view_client.assets().await?;
+                    let mut asset_cache = view_client.assets().await?;
+                    utils::add_chain_metadata(
+                        channel.clone(),
+                        &mut asset_cache,
+                        std::iter::once(dutch_auction.description.input.asset_id)
+                            .chain(std::iter::once(dutch_auction.description.output_id))
+                            .chain(positions.iter().flat_map(|position| {
+                                [position.phi.pair.asset_1(), position.phi.pair.asset_2()]
+                            })),
+                    )
+                    .await?;
                     render_dutch_auction(
                         &asset_cache,
                         &dutch_auction,

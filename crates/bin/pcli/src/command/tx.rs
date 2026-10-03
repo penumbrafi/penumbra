@@ -205,8 +205,10 @@ pub enum TxCmd {
     #[clap(display_order = 300)]
     Swap {
         /// The input amount to swap, written as a typed value 1.87penumbra, 12cubes, etc.
+        /// A raw asset ID such as 100passet1... may also be used for assets not in the registry.
         input: String,
-        /// The denomination to swap the input into, e.g. `gm`
+        /// The denomination to swap the input into, e.g. `gm`, or a raw asset ID such as
+        /// passet1... for assets not in the registry.
         #[clap(long, display_order = 100)]
         into: String,
         /// Only spend funds originally received by the given account.
@@ -496,7 +498,7 @@ impl TxCmd {
                 fee_tier,
             } => {
                 let input = input.parse::<Value>()?;
-                let into = asset::REGISTRY.parse_unit(into.as_str()).base();
+                let into = crate::command::utils::parse_unit(into).base();
                 let fee_tier: FeeTier = (*fee_tier).into();
 
                 let fvk = app.config.full_viewing_key.clone();

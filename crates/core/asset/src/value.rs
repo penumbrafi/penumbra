@@ -534,6 +534,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_unit_hashes_raw_passet_asset_id() {
+        // The registry treats an unknown string as a base denom and hashes it, even
+        // when it is a valid `passet…` asset ID. Consensus parses ICS-20 packet denoms
+        // through the registry, so this must not change; clients that accept asset
+        // IDs as input decode them before reaching the registry.
+        let bech32 = "passet167kw6zx5gtysvk9mwuxn0vxdx84afd6t76jyg62szljntlq0lvrsygwl44";
+        let id = Id::from_str(bech32).expect("valid bech32 asset id");
+        let unit = REGISTRY.parse_unit(bech32);
+        assert_ne!(unit.id(), id);
+        assert_eq!(unit.base().base_denom().denom, bech32);
+    }
+
+    #[test]
     fn format_picks_best_unit() {
         let upenumbra_sdk_base_denom = crate::asset::Cache::with_known_assets()
             .get_unit("upenumbra")
